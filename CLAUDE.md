@@ -87,7 +87,11 @@ Cada uma custou uma sessão de depuração. Não desfaça sem entender o motivo.
 7. **Sinais Unix só são tratados entre bytecodes do Python.** O `QTimer` de 400 ms no
    `__main__.py` existe só para devolver o controle ao interpretador; sem ele o
    `SIGTERM` nunca chega.
-8. **A cápsula é override-redirect** (`X11BypassWindowManagerHint`): nunca recebe foco,
+8. **Aplicativo iniciado pela sessão gráfica não herda o ambiente do shell.** Proxy
+   exportado no `.zshrc` existe só em terminais: pelo autostart, o `requests` sai direto
+   e a transcrição falha. Por isso `transcriber.proxies_for()` cai para a configuração de
+   proxy do sistema (`kioslaverc`) quando não há variáveis de ambiente.
+9. **A cápsula é override-redirect** (`X11BypassWindowManagerHint`): nunca recebe foco,
    que é o que permite colar na janela do usuário logo depois. A opacidade é uma
    propriedade interna (`fade`), não `windowOpacity`, para não depender do compositor.
 

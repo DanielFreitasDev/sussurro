@@ -42,6 +42,11 @@ variável `GROQ_API_KEY` existir no ambiente, ela tem prioridade sobre a chave s
 - **Python 3.11+**.
 - Só para o modo *digitar caractere a caractere*: `ydotool` com o serviço `ydotoold` ativo.
 
+Em rede com proxy não é preciso configurar nada: o Sussurro usa as variáveis
+`http(s)_proxy` quando existem e, se não existirem — o caso de quem é iniciado pela
+sessão gráfica —, lê o proxy configurado no sistema. O campo *Proxy* nas configurações
+força um endereço específico.
+
 ## Configurações
 
 | Ajuste | O que faz |
@@ -90,6 +95,10 @@ Troque *Como entregar o texto* para **Digitar caractere a caractere** (precisa d
 
 **Nada acontece ao segurar a tecla** — veja se o processo está vivo com
 `pgrep -af sussurro` e rode `sussurro` num terminal para ver os erros.
+
+**"Sem acesso a api.groq.com"** — típico de rede com proxy. Funciona no terminal e falha
+quando inicia com a sessão? É porque o proxy só existe nas variáveis do shell. Preencha o
+campo *Proxy* nas configurações, ou configure o proxy do sistema — o Sussurro lê os dois.
 
 ## Desenvolvimento
 

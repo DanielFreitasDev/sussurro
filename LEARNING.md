@@ -114,6 +114,29 @@ Vale mapear os erros para frases que o usuário entenda: 401 é chave inválida,
 grande demais, 429 traz `retry-after` no cabeçalho, 5xx merece uma retentativa. O
 `requests` respeita as variáveis de proxy do ambiente sozinho.
 
+## Ambiente: terminal e sessão gráfica são mundos diferentes
+
+O aplicativo funcionava perfeitamente quando eu o iniciava do terminal e falhou no
+primeiro login depois de um reboot: `HTTPSConnectionPool(host='api.groq.com')`. Causa:
+esta rede exige proxy, as variáveis `http_proxy` são exportadas no `.zshrc` — e o
+autostart do KDE não roda `.zshrc`. Do terminal o processo herdava o proxy; da sessão,
+não.
+
+A correção não é pedir para o usuário exportar variáveis: é o aplicativo descobrir o
+proxy sozinho, na ordem ajuste explícito → variáveis de ambiente → configuração do
+sistema. No KDE isso está em `~/.config/kioslaverc`, com dois detalhes que só se descobre
+lendo o arquivo: `ProxyType=1` significa manual (`4` é "usar o ambiente"), e o endereço é
+gravado como `http://127.0.0.1 3128` — **espaço no lugar dos dois-pontos**. O
+`NoProxyFor` da mesma seção precisa ser respeitado, senão tráfego interno vai parar no
+proxy.
+
+Vale ainda traduzir o erro: um `HTTPSConnectionPool(...)` cru não diz nada a quem usa.
+"Sem acesso a api.groq.com. Se sua rede exige proxy, informe-o nas configurações" diz.
+
+Regra que fica: **teste sempre no ambiente em que o programa realmente roda.** Iniciar
+pelo terminal durante todo o desenvolvimento escondeu a falha até o primeiro reboot.
+Reproduzir foi simples — `env -u http_proxy -u https_proxy … ./app` imita a sessão.
+
 ## Processo: como verificar de verdade
 
 **Meça pixels em vez de confiar no olho.** "Parece cortado" virou certeza ao comparar as

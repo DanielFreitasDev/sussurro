@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import os
 import threading
 import time
+from pathlib import Path
+from urllib.parse import urlparse
 
 import requests
 from PySide6.QtCore import QObject, Signal
@@ -18,8 +21,64 @@ class TranscriptionError(Exception):
     pass
 
 
+# -- proxy -------------------------------------------------------------------
+_ENV_PROXY_VARS = ("https_proxy", "HTTPS_PROXY", "http_proxy", "HTTP_PROXY",
+                   "all_proxy", "ALL_PROXY")
+
+
+def proxies_for(explicit: str = "") -> dict[str, str] | None:
+    """Proxy a usar, em ordem: ajuste do app, ambiente, configuração do KDE.
+
+    Aplicativos iniciados pela sessão gráfica não herdam o `http_proxy` que o
+    shell exporta, então descobrir o proxy sozinho é o que faz o ditado
+    funcionar tanto pelo autostart quanto pelo terminal.
+    """
+    if explicit:
+        return {"http": explicit, "https": explicit}
+    if any(os.environ.get(var) for var in _ENV_PROXY_VARS):
+        return None                      # o requests já resolve pelo ambiente
+    desktop = _desktop_proxy()
+    if desktop:
+        return {"http": desktop, "https": desktop}
+    return None
+
+
+def _desktop_proxy() -> str:
+    """Lê o proxy manual configurado no KDE (~/.config/kioslaverc)."""
+    path = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "kioslaverc"
+    try:
+        linhas = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return ""
+
+    values: dict[str, str] = {}
+    for line in linhas:
+        if "=" in line and not line.lstrip().startswith("#"):
+            key, _, value = line.partition("=")
+            values.setdefault(key.strip(), value.strip())
+
+    # 1 = manual, 4 = usar variáveis de ambiente (já tratado acima)
+    if values.get("ProxyType") != "1":
+        return ""
+
+    host = urlparse(ENDPOINT).hostname or ""
+    for entry in values.get("NoProxyFor", "").split(","):
+        entry = entry.strip().lstrip(".")
+        if entry and (host == entry or host.endswith("." + entry)):
+            return ""
+
+    raw = values.get("httpsProxy") or values.get("httpProxy") or ""
+    # O KDE grava "http://127.0.0.1 3128" — com espaço no lugar dos dois-pontos.
+    parts = raw.split()
+    if len(parts) == 2 and parts[1].isdigit():
+        raw = f"{parts[0]}:{parts[1]}"
+    if raw and "://" not in raw:
+        raw = "http://" + raw
+    return raw
+
+
 def transcribe(wav: bytes, *, api_key: str, model: str, language: str = "",
-               prompt: str = "", temperature: float = 0.0) -> str:
+               prompt: str = "", temperature: float = 0.0, proxy: str = "") -> str:
     if not api_key:
         raise TranscriptionError("Nenhuma chave de API configurada.")
     if len(wav) > MAX_UPLOAD:
@@ -44,12 +103,13 @@ def transcribe(wav: bytes, *, api_key: str, model: str, language: str = "",
                 data=data,
                 files={"file": ("audio.wav", wav, "audio/wav")},
                 timeout=TIMEOUT,
+                proxies=proxies_for(proxy),
             )
         except requests.Timeout:
             last_error = TranscriptionError("A API demorou demais para responder.")
             exc_retry = True
         except requests.RequestException as exc:
-            last_error = TranscriptionError(f"Falha de rede: {_short(exc)}")
+            last_error = TranscriptionError(_network_message(exc))
             exc_retry = True
         else:
             if resp.status_code == 200:
@@ -69,7 +129,7 @@ def transcribe(wav: bytes, *, api_key: str, model: str, language: str = "",
     raise last_error or TranscriptionError("Falha desconhecida na transcrição.")
 
 
-def check_key(api_key: str) -> tuple[bool, str]:
+def check_key(api_key: str, proxy: str = "") -> tuple[bool, str]:
     """Valida a chave listando os modelos disponíveis."""
     if not api_key:
         return False, "Informe uma chave de API."
@@ -78,9 +138,10 @@ def check_key(api_key: str) -> tuple[bool, str]:
             MODELS_ENDPOINT,
             headers={"Authorization": f"Bearer {api_key}"},
             timeout=(10, 20),
+            proxies=proxies_for(proxy),
         )
     except requests.RequestException as exc:
-        return False, f"Falha de rede: {_short(exc)}"
+        return False, _network_message(exc)
     if resp.status_code == 200:
         try:
             ids = {m.get("id") for m in resp.json().get("data", [])}
@@ -113,6 +174,20 @@ def _api_message(resp: requests.Response) -> str:
     if resp.status_code >= 500:
         return "A Groq está instável no momento."
     return detail or f"Erro HTTP {resp.status_code}."
+
+
+def _network_message(exc: Exception) -> str:
+    """Traduz erros de conexão para algo que aponte a causa provável."""
+    if isinstance(exc, requests.exceptions.ProxyError):
+        return "O proxy recusou a conexão. Confira o endereço nas configurações."
+    if isinstance(exc, requests.exceptions.SSLError):
+        return "Falha no TLS ao falar com a Groq — pode ser inspeção do proxy."
+    if isinstance(exc, requests.exceptions.ConnectionError):
+        if proxies_for() is None:
+            return ("Sem acesso a api.groq.com. Se sua rede exige proxy, informe-o "
+                    "nas configurações.")
+        return "Sem acesso a api.groq.com pelo proxy configurado."
+    return f"Falha de rede: {_short(exc)}"
 
 
 def _short(exc: Exception) -> str:

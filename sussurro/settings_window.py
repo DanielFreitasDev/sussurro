@@ -632,6 +632,12 @@ class SettingsWindow(QWidget):
         self.key_status.setWordWrap(True)
         card.addWidget(self.key_status)
 
+        self.proxy_edit = QLineEdit()
+        self.proxy_edit.setPlaceholderText("http://127.0.0.1:3128")
+        self._row(card, "Proxy (opcional)", self.proxy_edit,
+                  "Vazio detecta sozinho: variáveis de ambiente, depois a configuração "
+                  "de proxy do sistema.")
+
     def _build_transcription(self) -> None:
         card = self._card("Transcrição")
         self.model_combo = _Combo()
@@ -714,6 +720,7 @@ class SettingsWindow(QWidget):
     # -- dados ---------------------------------------------------------------
     def _load_values(self) -> None:
         self.key_edit.setText(self.cfg.api_key)
+        self.proxy_edit.setText(self.cfg.proxy)
         self._select(self.model_combo, self.cfg.model)
         self._select(self.lang_combo, self.cfg.language)
         self.prompt_edit.setPlainText(self.cfg.prompt)
@@ -771,11 +778,12 @@ class SettingsWindow(QWidget):
     # -- ações ---------------------------------------------------------------
     def _test_key(self) -> None:
         key = self.key_edit.text().strip() or self.cfg.resolved_key()
+        proxy = self.proxy_edit.text().strip()
         self.test_btn.setEnabled(False)
         self.key_status.setText("Verificando…")
 
         def job() -> None:
-            ok, message = check_key(key)
+            ok, message = check_key(key, proxy)
             self._checker.done.emit(ok, message)
 
         threading.Thread(target=job, daemon=True).start()
@@ -789,6 +797,7 @@ class SettingsWindow(QWidget):
 
     def _save(self) -> None:
         self.cfg.api_key = self.key_edit.text().strip()
+        self.cfg.proxy = self.proxy_edit.text().strip()
         self.cfg.model = self.model_combo.currentData()
         self.cfg.language = self.lang_combo.currentData()
         self.cfg.prompt = self.prompt_edit.toPlainText().strip()

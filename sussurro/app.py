@@ -147,6 +147,7 @@ class Sussurro(QObject):
             language=self.cfg.language,
             prompt=self.cfg.prompt,
             temperature=self.cfg.temperature,
+            proxy=self.cfg.proxy,
         )
 
     def cancel(self) -> None:

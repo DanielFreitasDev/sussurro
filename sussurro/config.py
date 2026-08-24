@@ -91,6 +91,7 @@ class Config:
     max_duration: int = 300           # segundos
     keep_history: bool = True
     theme: str = "auto"
+    proxy: str = ""            # vazio = detecta sozinho
     result_feedback: str = "text"
     overlay_position: str = "bottom"  # bottom | top
     trailing_punctuation: bool = False
