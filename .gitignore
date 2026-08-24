@@ -1,0 +1,11 @@
+# ambiente virtual e artefatos do Python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# configuração e dados locais (nunca versionar: contêm a chave da API)
+config.json
+*.log

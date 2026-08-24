@@ -1,0 +1,152 @@
+# LEARNING.md
+
+Diário técnico deste projeto: o que só se descobre construindo, com o sintoma que levou
+até lá. O [CLAUDE.md](CLAUDE.md) resume as regras; aqui está o porquê de cada uma, com
+números medidos nesta máquina (Ubuntu 24.04, KDE Plasma sobre X11, PipeWire 1.0.5).
+
+## X11 e teclado
+
+**Grab de uma tecla só, não do teclado inteiro.** `XGrabKey` entrega press *e* release
+apenas da tecla escolhida — é o que separa um atalho de um keylogger. Se outro cliente já
+tiver a tecla, o servidor responde `BadAccess`: capture com `error.CatchError(BadAccess)`
+seguido de `sync()` e avise o usuário, senão o atalho falha em silêncio.
+
+**Registre o grab para cada combinação de teclas travadas.** Num Lock, Caps Lock e Scroll
+Lock entram no `state` do evento. Sem registrar as 16 combinações de
+`Lock|Mod2|Mod3|Mod5`, o atalho simplesmente para de funcionar com o Num Lock ligado —
+uma falha que só aparece na máquina de quem usa.
+
+**O auto-repeat inventa releases que nunca aconteceram.** Segurando a tecla, o X11 emite
+pares press/release na taxa de repetição (medido aqui: 25/s, ou seja 40 ms, após 600 ms de
+espera). Para ditado *segure-e-fale* isso encerra a gravação no meio da frase. O caminho
+canônico seria `XkbSetDetectableAutoRepeat`, mas o `python-xlib` 0.33 não expõe a extensão
+xkb. A saída é desligar o repeat só daquela tecla e restaurar ao sair:
+
+```python
+dsp.change_keyboard_control(key=keycode, auto_repeat_mode=X.AutoRepeatModeOff)
+```
+
+Para conferir: `xset q` mostra o mapa "auto repeating keys" em 32 bytes; a tecla *n* é o
+bit `n % 8` do byte `n // 8`. Pause é o keycode 127, então byte 15, bit 7 — passa de `ff`
+para `7f` quando o repeat dela está desligado. Um debounce de 60 ms na soltura continua no
+código como rede de segurança, caso a chamada falhe.
+
+**XTEST serve para os dois lados.** Envia a colagem (`fake_input` com Ctrl+V) e também
+dirige o próprio aplicativo nos testes, simulando a tecla física — foi assim que o ciclo
+completo foi validado sem ninguém tocar no teclado.
+
+**Descobrir a janela em foco** é `get_input_focus().focus` subindo pelos pais até achar um
+`WM_CLASS`: a janela com foco costuma ser um filho sem classe própria. Com a classe em
+mãos dá para escolher `Ctrl+Shift+V` em terminais, onde `Ctrl+V` não cola.
+
+**A cápsula precisa ser override-redirect** (`X11BypassWindowManagerHint`). Uma janela
+comum roubaria o foco da janela do usuário, e a colagem iria para o lugar errado.
+
+## Áudio com PipeWire
+
+`pw-record --rate 16000 --channels 1 --format s16 -` escreve **PCM cru no stdout**, sem
+cabeçalho RIFF — perfeito para calcular o nível do sinal em tempo real enquanto grava. O
+cabeçalho WAV é montado só na hora do upload, com o módulo `wave` em memória.
+
+O primeiro byte demora **~140 ms** (média de três medições: 152, 138, 139 ms). É por isso
+que a cápsula só troca para o estado "ao vivo" quando o áudio realmente começa a chegar:
+mostrar "gravando" antes disso é mentira, e o usuário fala em cima do silêncio.
+
+Nível em escala perceptual, não linear: `20·log10(rms)` normalizado com piso em −55 dB. Em
+escala linear a barra quase não se mexe com voz normal.
+
+`pw-dump` em JSON lista as fontes (`media.class == "Audio/Source"`), e `--target` aceita o
+`node.name` — é o caminho para escolher microfone sem depender do PulseAudio.
+
+## Qt 6 e PySide6
+
+**`app.quit()` fecha todas as janelas antes de sair, e um `closeEvent` que ignora o evento
+cancela o encerramento inteiro.** Sintoma: o aplicativo ignorava `SIGTERM` — só quando a
+janela de configurações estava aberta. A animação de fade ao fechar era a culpada. Se você
+intercepta o fechamento para animar, precise de um caminho de desligamento que não
+intercepte (aqui, `prepare_shutdown()` + uma propriedade no QApplication).
+
+**Sinais Unix só rodam entre bytecodes do Python.** Dentro de `app.exec()` o interpretador
+fica parado em C++: sem um `QTimer` periódico executando qualquer código Python, o
+handler de `SIGTERM` nunca é chamado. Um timer de 400 ms com um slot vazio resolve.
+
+**Folhas de estilo do Qt não animam.** Não existe `transition`; `:hover` troca o valor de
+um quadro para o outro. Para transição de verdade é preciso pintar o widget à mão e
+animar uma `Property` própria com `QPropertyAnimation`. Foi o que motivou os botões e a
+barra de rolagem customizados.
+
+**Widget de texto longo estica a largura mínima da página inteira.** `QPushButton` não
+encurta texto: com o histórico cheio, cada linha exigia 504 px, a página passou a exigir
+586 px contra 552 disponíveis e — com a barra horizontal desligada — o excedente foi
+cortado **sem aviso**, escondendo a borda direita dos cartões. Todo widget de texto
+variável precisa de `QSizePolicy.Ignored` mais elisão manual no `resizeEvent`.
+
+Lição geral: desligar `ScrollBarAlwaysOff` esconde o sintoma, não a causa. Quando algo
+"some" na borda, meça `page.minimumSizeHint().width()` contra `viewport().width()`.
+
+**`QComboBox` muda de valor com a roda do mouse** enquanto a página rola — o usuário
+altera ajustes sem perceber. `wheelEvent` que chama `event.ignore()` devolve a rolagem
+para a área e mantém o valor. E `minimumSizeHint` do combo é a largura do item mais
+largo: sem `AdjustToMinimumContentsLengthWithIcon` ele também trava o encolhimento da
+janela.
+
+**`setDesktopSettingsAware(False)` quebra a detecção de tema:** `styleHints().colorScheme()`
+passa a devolver `Unknown`. Como reserva, o portal responde por D-Bus
+(`org.freedesktop.portal.Settings.Read org.freedesktop.appearance color-scheme`, com
+`1 = escuro`, `2 = claro`).
+
+**Detalhes menores que custaram tempo:** `animation.finished.disconnect()` sem conexão
+emite `RuntimeWarning` (use uma flag de estado em vez de conectar e desconectar);
+`QApplication.setApplicationDisplayName` faz o Qt anexar o nome ao título de cada janela
+("Sussurro — Configurações — Sussurro"); `RESOURCE_NAME` no ambiente define o `WM_CLASS`,
+que é o que o KDE usa para casar a janela com o atalho `.desktop`.
+
+## API da Groq
+
+Endpoint `POST /openai/v1/audio/transcriptions`, multipart. O modelo reamostra tudo para
+16 kHz mono, então enviar já nesse formato é o mais rápido e o mais leve. Limite de 25 MB
+na conta gratuita (100 MB na paga), mínimo cobrado de 10 s por requisição. `language` em
+ISO-639-1 acelera e evita tradução acidental; `prompt` aceita até 224 tokens de
+vocabulário. `response_format` aceita `json`, `verbose_json` e `text` — `json` basta
+quando só se quer o texto.
+
+Vale mapear os erros para frases que o usuário entenda: 401 é chave inválida, 413 é áudio
+grande demais, 429 traz `retry-after` no cabeçalho, 5xx merece uma retentativa. O
+`requests` respeita as variáveis de proxy do ambiente sozinho.
+
+## Processo: como verificar de verdade
+
+**Meça pixels em vez de confiar no olho.** "Parece cortado" virou certeza ao comparar as
+transições de cor de uma linha da captura: borda esquerda do cartão em x=51, direita
+ausente — e, depois da correção, em x=561, simétrica.
+
+**Dirija a interface, não só o código.** Tecla via XTEST, ponteiro via `warp_pointer`,
+roda via `fake_input(ButtonPress, 5)`, captura via `import -window root -crop` usando a
+geometria que `xwininfo -root -tree` informa. Foi assim que "a roda não muda mais o
+combo" deixou de ser suposição: o valor ficou em 0 e a página andou 0 → 921.
+
+**Um teste sintético pode mentir.** `app.sendEvent(combo, wheel)` não propaga o evento
+ignorado para o pai como o Qt faz na entrega real — o teste "falhou" com o código certo.
+Quando o resultado desafiar a lógica, suba um degrau na fidelidade do teste.
+
+**Cuidado com o ambiente do próprio teste.** Duas armadilhas custaram caro aqui: o socket
+de instância única é por UID, então uma instância de teste com `XDG_CONFIG_HOME` isolado
+conversa com a instância real e sai sem subir; e uma janela remanescente por cima engole
+os eventos do ponteiro, fazendo um teste correto falhar.
+
+**Shell:** `pkill -f "padrão"` casa com a linha de comando do próprio shell que o executa
+— e mata a sessão (aqui, saída 144, duas vezes). Filtre `$$` e `$PPID`. Some a isso que o
+zsh **não** faz word-splitting de variáveis: `for p in $PIDS` itera uma vez com a string
+inteira, enquanto `for p in $(pgrep …)` itera certo. E o padrão precisa casar a linha real:
+um `-u` no meio do comando (`python -u -m sussurro`) já derruba o `pgrep`.
+
+## Decisões de produto que se provaram certas
+
+- **Segure para falar**, sem alternar: o gesto delimita a fala e evita gravação esquecida.
+- **`Esc` cancela** durante a gravação — arrependimento é comum ao ditar.
+- **Guardas de silêncio e de duração mínima** poupam requisições: toque acidental não vira
+  chamada de API (e cada chamada custa 10 s no mínimo).
+- **O que aparece ao terminar é escolha do usuário.** Mostrar o texto transcrito é útil no
+  começo e vira ruído depois, já que o texto aparece colado no destino de qualquer forma.
+- **Texto sempre na área de transferência**, mesmo quando a colagem falha: nunca se perde
+  uma transcrição por causa de um aplicativo que ignora colagem sintética.
