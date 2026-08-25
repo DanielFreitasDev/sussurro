@@ -75,23 +75,29 @@ Cada uma custou uma sessão de depuração. Não desfaça sem entender o motivo.
    `change_keyboard_control(key=..., auto_repeat_mode=Off)` só para a tecla do atalho,
    restaurando ao sair. `XkbSetDetectableAutoRepeat` não é opção: `python-xlib` 0.33 não
    expõe a extensão xkb.
-3. **Folhas de estilo do Qt não animam** (não existe `transition`). Botões e barra de
+3. **`select()` sozinho perde eventos do X11.** Todo `sync()` — os grabs fazem um por
+   gravação — lê o socket inteiro atrás da resposta e leva junto os eventos que chegaram
+   no meio; eles ficam na fila interna do `python-xlib`, onde o `select` não os enxerga.
+   Sintoma: reapertar o atalho ~80 ms depois de soltar engolia o press até a tecla
+   seguinte — a cápsula não aparecia e o ditado saía "muito curto". Por isso o laço de
+   `hotkey.py` drena `pending_events()` a cada volta, e não só quando o `select` acusa.
+4. **Folhas de estilo do Qt não animam** (não existe `transition`). Botões e barra de
    rolagem são pintados à mão com `QPropertyAnimation` sobre propriedades próprias.
-4. **Widget com texto longo estica a largura mínima da página.** Com a barra horizontal
+5. **Widget com texto longo estica a largura mínima da página.** Com a barra horizontal
    desligada, o excedente é cortado em silêncio — foi o que escondeu a borda dos cartões.
    Qualquer widget de texto variável precisa de `QSizePolicy.Ignored` + elisão manual.
-5. **`QComboBox` muda de valor com a roda do mouse.** `_Combo.wheelEvent` ignora o evento
+6. **`QComboBox` muda de valor com a roda do mouse.** `_Combo.wheelEvent` ignora o evento
    de propósito, e `AdjustToMinimumContentsLengthWithIcon` permite encolher.
-6. **`setDesktopSettingsAware(False)` quebra a detecção de tema**: `colorScheme()` passa a
+7. **`setDesktopSettingsAware(False)` quebra a detecção de tema**: `colorScheme()` passa a
    devolver `Unknown`. Não volte a chamá-lo.
-7. **Sinais Unix só são tratados entre bytecodes do Python.** O `QTimer` de 400 ms no
+8. **Sinais Unix só são tratados entre bytecodes do Python.** O `QTimer` de 400 ms no
    `__main__.py` existe só para devolver o controle ao interpretador; sem ele o
    `SIGTERM` nunca chega.
-8. **Aplicativo iniciado pela sessão gráfica não herda o ambiente do shell.** Proxy
+9. **Aplicativo iniciado pela sessão gráfica não herda o ambiente do shell.** Proxy
    exportado no `.zshrc` existe só em terminais: pelo autostart, o `requests` sai direto
    e a transcrição falha. Por isso `transcriber.proxies_for()` cai para a configuração de
    proxy do sistema (`kioslaverc`) quando não há variáveis de ambiente.
-9. **A cápsula é override-redirect** (`X11BypassWindowManagerHint`): nunca recebe foco,
+10. **A cápsula é override-redirect** (`X11BypassWindowManagerHint`): nunca recebe foco,
    que é o que permite colar na janela do usuário logo depois. A opacidade é uma
    propriedade interna (`fade`), não `windowOpacity`, para não depender do compositor.
 

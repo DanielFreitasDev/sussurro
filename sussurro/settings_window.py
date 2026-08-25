@@ -7,7 +7,7 @@ import threading
 import time
 from pathlib import Path
 
-from PySide6.QtCore import (Property, QEasingCurve, QObject, QPoint,
+from PySide6.QtCore import (Property, QEasingCurve, QEvent, QObject, QPoint,
                             QPropertyAnimation, QRectF, Qt, QTimer, Signal)
 from PySide6.QtGui import (QBrush, QColor, QCursor, QFontMetrics, QGuiApplication,
                            QIcon, QPainter, QPen)
@@ -18,16 +18,41 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFrame,
                                QVBoxLayout, QWidget)
 
 from . import __version__, history, theme
-from .config import (HOTKEYS, LANGUAGES, MODELS, PASTE_MODES, RESULT_FEEDBACK,
-                     SERVICES, THEMES, Config)
+from .config import (DATA_DIR, HOTKEYS, LANGUAGES, MODELS, PASTE_MODES,
+                     RESULT_FEEDBACK, SERVICES, THEMES, Config)
 from .recorder import list_sources
 from .transcriber import check_key
 
 ASSETS = Path(__file__).parent / "assets"
 ICON = ASSETS / "icon.svg"
 CACHE = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "sussurro"
+DIAGNOSTICO = DATA_DIR / "diagnostico.log"
 
 SHADOW = 26          # respiro ao redor da janela para a sombra
+
+
+_anotacoes = 0
+
+
+def _anotar(motivo: str) -> None:
+    """Registra uma anomalia da interface com a pilha de quem a causou.
+
+    Existe por causa do rodapé que perde os botões: sem um rastro do momento
+    exato não há como achar o culpado, porque nada aparece no log do Qt.
+    """
+    global _anotacoes
+    if _anotacoes >= 5:               # não vira enxurrada se o caso repetir
+        return
+    _anotacoes += 1
+    import traceback
+    registro = (f"{time.strftime('%d/%m %H:%M:%S')}  {motivo}\n"
+                + "".join(traceback.format_stack()[:-1]) + "\n")
+    try:
+        DIAGNOSTICO.parent.mkdir(parents=True, exist_ok=True)
+        with DIAGNOSTICO.open("a", encoding="utf-8") as arquivo:
+            arquivo.write(registro)
+    except OSError:
+        pass
 
 
 def _glyphs(pal: theme.Palette) -> tuple[str, str, str]:
@@ -559,17 +584,49 @@ class SettingsWindow(QWidget):
         self.status.setObjectName("hint")
         self.status.setWordWrap(True)
         foot.addWidget(self.status, 1)
-        close_btn = _Button("Fechar")
-        close_btn.clicked.connect(self.close)
-        save_btn = _Button("Salvar", "primary")
-        save_btn.setDefault(True)
-        save_btn.clicked.connect(self._save)
-        foot.addWidget(close_btn)
-        foot.addWidget(save_btn)
+        self.close_btn = _Button("Fechar")
+        self.close_btn.clicked.connect(self.close)
+        self.save_btn = _Button("Salvar", "primary")
+        self.save_btn.setDefault(True)
+        self.save_btn.clicked.connect(self._save)
+        foot.addWidget(self.close_btn)
+        foot.addWidget(self.save_btn)
+        for botao in (self.close_btn, self.save_btn):
+            botao.installEventFilter(self)
         outer.addWidget(footer)
 
         self.restyle()
         self._load_values()
+
+    # -- rodapé --------------------------------------------------------------
+    def eventFilter(self, obj, event) -> bool:
+        """Devolve os botões do rodapé se alguém os esconder.
+
+        Em uso real "Fechar" e "Salvar" já sumiram do rodapé: ocultos, sem
+        erro nenhum no log, e a barra encolheu de 68 para 46 px — só o rótulo
+        de status sobrou. A causa ainda não apareceu (não reproduz nem em
+        centenas de ciclos de abrir/fechar/rolar), então até lá o rodapé
+        desfaz o sumiço na hora e anota a pilha de quem escondeu.
+        `HideToParent` só chega quando o próprio widget é escondido —
+        esconder a janela inteira não dispara este caminho.
+        """
+        if (event.type() == QEvent.Type.HideToParent
+                and obj in (self.close_btn, self.save_btn) and obj.isHidden()):
+            _anotar(f"botão {obj.text()!r} do rodapé foi escondido")
+            QTimer.singleShot(0, obj.show)
+        return super().eventFilter(obj, event)
+
+    def _conferir_rodape(self) -> None:
+        """Rede final: ao abrir a janela, garante que os botões estão lá."""
+        for botao in (self.close_btn, self.save_btn):
+            try:
+                oculto = botao.isHidden()
+            except RuntimeError:          # o objeto C++ já não existe
+                _anotar("um botão do rodapé foi destruído")
+                return
+            if oculto:
+                _anotar(f"botão {botao.text()!r} estava oculto ao abrir")
+                botao.show()
 
     # -- aparência -----------------------------------------------------------
     def restyle(self) -> None:
@@ -880,6 +937,7 @@ class SettingsWindow(QWidget):
     # -- janela --------------------------------------------------------------
     def showEvent(self, event) -> None:
         self.refresh_history()
+        self._conferir_rodape()
         if not self._placed:
             self._placed = True
             self._fit_to_screen()

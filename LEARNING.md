@@ -31,6 +31,42 @@ bit `n % 8` do byte `n // 8`. Pause é o keycode 127, então byte 15, bit 7 — 
 para `7f` quando o repeat dela está desligado. Um debounce de 60 ms na soltura continua no
 código como rede de segurança, caso a chamada falhe.
 
+**O `select()` não enxerga todos os eventos que já chegaram.** Sintoma relatado: às vezes
+a cápsula não aparecia ao apertar o atalho; ao soltar, o ditado saía "muito curto", e a
+tentativa seguinte funcionava. Acontecia "quando aperto várias vezes seguidas" — a pista
+que fechou o caso.
+
+O laço do atalho dormia em `select` sobre o `fileno()` do Display e só drenava a fila
+quando o socket acusava dados. Mas todo `sync()` lê o socket inteiro procurando sua
+resposta e **guarda na fila interna do `python-xlib` os eventos que chegaram no meio** —
+depois disso o socket está vazio e o `select` nunca mais acusa nada. O evento fica preso
+até a próxima tecla chegar. Prova em duas linhas:
+
+```python
+envia_evento(); time.sleep(0.1)
+select.select([d.fileno()], [], [], 0.3)   # True  -> o select vê
+envia_evento(); time.sleep(0.1); d.sync()
+select.select([d.fileno()], [], [], 0.3)   # False -> mas pending_events() == 1
+```
+
+E o `sync()` acontece exatamente onde o usuário reaperta: `grab_escape(False)` é enviado
+ao terminar a gravação e o laço o executa até 80 ms depois (o timeout do `select`),
+fazendo `ungrab_key` × 16 + `sync`. Varrendo o intervalo entre soltar e reapertar em
+passos de 5 ms, o press se perdia **8/8 vezes em 80 ms** e passava ileso nos vizinhos —
+uma janela estreita, mas mirada de cheio por quem aperta em sequência. O press preso só
+era entregue junto com o release seguinte: gravação de 60 ms, cápsula aparecendo só no
+fim e o veredito "muito curto".
+
+Regra que fica: **com `python-xlib`, drene `pending_events()` a cada volta do laço**, não
+só quando o `select` acusar. O `select` responde sobre o socket; a fila de eventos é outra
+coisa.
+
+**Duração mínima é sobre a tecla, não sobre o áudio.** Como o `pw-record` leva ~150 ms
+até o primeiro byte, medir o mínimo pelo PCM capturado cobrava do usuário um atraso que
+não era dele: segurar 0,55 s virava 0,4 s de áudio e o ditado era descartado. Agora quem
+decide é o tempo de tecla segurada; áudio vazio com tecla segurada é falha da captura e
+tem mensagem própria.
+
 **XTEST serve para os dois lados.** Envia a colagem (`fake_input` com Ctrl+V) e também
 dirige o próprio aplicativo nos testes, simulando a tecla física — foi assim que o ciclo
 completo foi validado sem ninguém tocar no teclado.
@@ -163,6 +199,32 @@ já produz a exceção exata.
 Regra que fica: **quando uma exceção cobre duas causas com ações opostas, a mensagem
 precisa olhar a causa aninhada.** Escolher uma das duas e escrever a frase como se fosse
 sempre ela transforma o erro em pista falsa.
+
+## Em aberto: o rodapé que perde os botões
+
+Relatado e confirmado na instância real: depois de abrir e fechar a janela algumas vezes,
+"Fechar" e "Salvar" somem do rodapé — e não voltam nem fechando e reabrindo (o objeto da
+janela é reaproveitado; só reiniciar o aplicativo resolve).
+
+O que a medição diz, comparando a captura defeituosa com uma sadia (`import -window`, e a
+linha `border-top` do rodapé como régua): a linha fica em y=758 em vez de y=739, isto é, o
+rodapé encolheu de **64 px para 44 px** — sobrou a altura das margens mais o rótulo de
+status. Widget oculto não ocupa espaço em layout nenhum, então os dois botões saíram da
+conta. Redimensionar a janela por fora força um relayout e **não** os traz de volta, o que
+descarta geometria suja. Nada aparece no log (o stderr do app vai para o journal, e não há
+uma linha sequer).
+
+O que já foi descartado: esmagamento de layout (o rodapé aguenta 400 px de largura sem
+espremer os botões), `sizeHint` falhando (o Qt cai no valor anterior e mantém 36 px de
+altura), e coleta de lixo do PySide (com `gc.collect()` a cada rodada os botões
+sobrevivem). Não reproduziu em ~200 ciclos de abrir/fechar/rolar/salvar/trocar tema,
+dirigidos por XTEST e pelo socket de instância única.
+
+Enquanto a causa não aparece, `settings_window.py` faz duas coisas: um `eventFilter` nos
+dois botões desfaz o sumiço na hora (`HideToParent` com `isHidden()` só chega quando o
+próprio widget é escondido — esconder a janela não dispara), e `_anotar()` grava em
+`~/.local/share/sussurro/diagnostico.log` a pilha de quem escondeu. Na próxima vez que
+acontecer, o culpado estará no arquivo.
 
 ## Processo: como verificar de verdade
 

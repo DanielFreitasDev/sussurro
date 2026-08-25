@@ -109,13 +109,16 @@ class HotkeyListener(QObject):
                 return False
             return True
 
-        def ungrab(keycode: int) -> None:
+        def ungrab(keycode: int, restore_repeat: bool = True) -> None:
             if not keycode:
                 return
             for mask in MASKS:
                 root.ungrab_key(keycode, mask)
             dsp.sync()
-            set_repeat(keycode, True)
+            # Só a tecla do atalho teve o auto-repeat desligado; mexer no do
+            # Esc seria alterar o teclado do usuário sem motivo.
+            if restore_repeat:
+                set_repeat(keycode, True)
 
         def bind(name: str) -> None:
             if state["grabbed"]:
@@ -156,21 +159,24 @@ class HotkeyListener(QObject):
                         if want and not state["esc_grabbed"]:
                             state["esc_grabbed"] = grab(state["escape"])
                         elif not want and state["esc_grabbed"]:
-                            ungrab(state["escape"])
+                            ungrab(state["escape"], restore_repeat=False)
                             state["esc_grabbed"] = False
             except queue.Empty:
                 pass
 
             try:
-                ready, _, _ = select.select([dsp.fileno()], [], [], 0.08)
-            except (OSError, ValueError):
+                select.select([dsp.fileno()], [], [], 0.08)
+            except Exception:      # conexão X encerrada (logout, servidor caiu)
                 break
-            if not ready:
-                continue
 
+            # O select só acusa o que ainda está no socket, e todo sync() —
+            # os grabs fazem um a cada gravação — lê o socket inteiro para
+            # achar sua resposta, levando junto os eventos que chegaram no
+            # meio. Eles ficam na fila interna do python-xlib, invisíveis para
+            # o select: sem drenar a fila a cada volta, uma tecla apertada
+            # nesse instante só é entregue quando a próxima chegar.
             try:
-                pending = dsp.pending_events()
-                for _ in range(pending):
+                while dsp.pending_events():
                     self._handle(dsp.next_event(), state, bind)
             except Exception:
                 continue
@@ -178,7 +184,7 @@ class HotkeyListener(QObject):
         if state["grabbed"]:
             ungrab(state["keycode"])
         if state["esc_grabbed"]:
-            ungrab(state["escape"])
+            ungrab(state["escape"], restore_repeat=False)
         try:
             dsp.close()
         except Exception:

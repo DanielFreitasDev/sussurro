@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+
 from PySide6.QtCore import QObject, QTimer, Signal
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import QApplication
@@ -18,6 +20,7 @@ from .tray import Tray
 IDLE, RECORDING, WORKING = "idle", "recording", "working"
 RELEASE_DEBOUNCE_MS = 60     # rede de segurança extra contra auto-repeat
 SILENCE_THRESHOLD = 0.02
+MIN_AUDIO_SECONDS = 0.12     # abaixo disso não há o que transcrever
 
 
 class Sussurro(QObject):
@@ -29,6 +32,7 @@ class Sussurro(QObject):
         self.state = IDLE
         self._clipboard_backup: str | None = None
         self._duration = 0.0
+        self._held_since = 0.0
 
         self.overlay = Overlay()
         self.overlay.set_position(self.cfg.overlay_position)
@@ -112,6 +116,7 @@ class Sussurro(QObject):
         if not self.recorder.start(self.cfg.input_device):
             self.overlay.show_error("Não foi possível acessar o microfone.")
             return
+        self._held_since = time.monotonic()
         self.state = RECORDING
         self.tray.set_recording()
         self.hotkey.grab_escape(True)
@@ -122,14 +127,24 @@ class Sussurro(QObject):
             return
         self._max_timer.stop()
         self.hotkey.grab_escape(False)
+        held = time.monotonic() - self._held_since
         peak = self.recorder.peak
         pcm = self.recorder.stop()
         self._duration = len(pcm) / BYTES_PER_SECOND
 
-        if self._duration < self.cfg.min_duration:
+        # O veredito é sobre quanto tempo a tecla ficou segurada, não sobre o
+        # tamanho do áudio: o `pw-record` leva ~150 ms até o primeiro byte, e
+        # cobrar isso do usuário descartava ditados em que ele segurou o
+        # suficiente. Áudio vazio com tecla segurada é falha da captura.
+        if held < self.cfg.min_duration:
             self.state = IDLE
             self.tray.set_idle(self._hotkey_label())
             self.overlay.show_info("Muito curto — segure a tecla enquanto fala.")
+            return
+        if self._duration < MIN_AUDIO_SECONDS:
+            self.state = IDLE
+            self.tray.set_idle(self._hotkey_label())
+            self.overlay.show_error("O microfone não entregou áudio a tempo.")
             return
         if peak < SILENCE_THRESHOLD:
             self.state = IDLE

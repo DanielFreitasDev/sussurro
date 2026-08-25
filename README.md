@@ -67,7 +67,8 @@ força um endereço específico.
 
 As preferências ficam em `~/.config/sussurro/config.json` (permissão `600`, porque guarda
 a chave) e o histórico em `~/.local/share/sussurro/history.jsonl`. Três ajustes finos
-existem só no JSON: `min_duration` (0,45 s — abaixo disso o toque é ignorado),
+existem só no JSON: `min_duration` (0,45 s de tecla segurada — abaixo disso o toque é
+ignorado),
 `max_duration` (300 s — encerra a gravação sozinho) e `temperature`.
 
 O ícone na bandeja também grava sem o teclado (útil para trechos longos), copia do
