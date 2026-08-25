@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import threading
 import time
 from pathlib import Path
@@ -109,7 +110,7 @@ def transcribe(wav: bytes, *, api_key: str, model: str, language: str = "",
             last_error = TranscriptionError("A API demorou demais para responder.")
             exc_retry = True
         except requests.RequestException as exc:
-            last_error = TranscriptionError(_network_message(exc))
+            last_error = TranscriptionError(_network_message(exc, proxy))
             exc_retry = True
         else:
             if resp.status_code == 200:
@@ -141,7 +142,7 @@ def check_key(api_key: str, proxy: str = "") -> tuple[bool, str]:
             proxies=proxies_for(proxy),
         )
     except requests.RequestException as exc:
-        return False, _network_message(exc)
+        return False, _network_message(exc, proxy)
     if resp.status_code == 200:
         try:
             ids = {m.get("id") for m in resp.json().get("data", [])}
@@ -176,18 +177,70 @@ def _api_message(resp: requests.Response) -> str:
     return detail or f"Erro HTTP {resp.status_code}."
 
 
-def _network_message(exc: Exception) -> str:
+# O requests usa ProxyError tanto para "não alcancei o proxy" quanto para "o
+# proxy respondeu e recusou o túnel"; só a causa aninhada separa os dois.
+_TUNNEL_RE = re.compile(r"Tunnel connection failed: (\d{3}) ([^'\"\\)]*)")
+
+
+def _network_message(exc: Exception, proxy: str = "") -> str:
     """Traduz erros de conexão para algo que aponte a causa provável."""
     if isinstance(exc, requests.exceptions.ProxyError):
-        return "O proxy recusou a conexão. Confira o endereço nas configurações."
+        return _proxy_message(exc, proxy)
     if isinstance(exc, requests.exceptions.SSLError):
         return "Falha no TLS ao falar com a Groq — pode ser inspeção do proxy."
     if isinstance(exc, requests.exceptions.ConnectionError):
-        if proxies_for() is None:
-            return ("Sem acesso a api.groq.com. Se sua rede exige proxy, informe-o "
-                    "nas configurações.")
-        return "Sem acesso a api.groq.com pelo proxy configurado."
+        address = _proxy_address(proxy)
+        if address:
+            return f"Sem acesso a {_host()} pelo proxy {address}."
+        return (f"Sem acesso a {_host()}. Se sua rede exige proxy, informe-o "
+                "nas configurações.")
     return f"Falha de rede: {_short(exc)}"
+
+
+def _proxy_message(exc: Exception, proxy: str = "") -> str:
+    """Distingue proxy inalcançável de proxy que recusou o túnel.
+
+    Os dois casos pedem ações opostas: conferir o endereço só resolve o
+    primeiro. No segundo o proxy respondeu — e o código que ele devolveu é
+    que aponta a causa, então mostrá-lo evita mandar depurar o que está certo.
+    """
+    match = _TUNNEL_RE.search(str(exc))
+    if not match:
+        address = _proxy_address(proxy)
+        onde = f" {address}" if address else ""
+        return (f"Não foi possível conectar ao proxy{onde}. Confira o endereço "
+                "nas configurações.")
+
+    code, reason = match.group(1), match.group(2).strip()
+    if code == "407":
+        return ("O proxy exige autenticação. Informe usuário e senha no endereço "
+                "do proxy (http://usuario:senha@host:porta).")
+    # 500 entra aqui porque o squid o devolve quando nenhum pai está de pé
+    # (HIER_NONE no log) — transitório como os 5xx de gateway, não erro de uso.
+    if code in ("500", "502", "503", "504"):
+        return (f"O proxy não alcançou {_host()} agora ({code} {reason}). "
+                "Costuma ser passageiro — tente de novo.")
+    return f"O proxy recusou o túnel até {_host()} ({code} {reason})."
+
+
+def _proxy_address(proxy: str = "") -> str:
+    """Endereço do proxy em uso — inclusive quando quem resolve é o requests."""
+    mapping = proxies_for(proxy)
+    if mapping:
+        url = mapping.get("https") or mapping.get("http") or ""
+    else:
+        url = next((os.environ[var] for var in _ENV_PROXY_VARS
+                    if os.environ.get(var)), "")
+    if not url:
+        return ""
+    parsed = urlparse(url if "://" in url else "http://" + url)
+    if not parsed.hostname:
+        return ""
+    return f"{parsed.hostname}:{parsed.port}" if parsed.port else parsed.hostname
+
+
+def _host() -> str:
+    return urlparse(ENDPOINT).hostname or "a Groq"
 
 
 def _short(exc: Exception) -> str:

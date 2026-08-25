@@ -137,6 +137,33 @@ Regra que fica: **teste sempre no ambiente em que o programa realmente roda.** I
 pelo terminal durante todo o desenvolvimento escondeu a falha até o primeiro reboot.
 Reproduzir foi simples — `env -u http_proxy -u https_proxy … ./app` imita a sessão.
 
+### `ProxyError` são dois erros com o mesmo nome
+
+O ditado falhou com "O proxy recusou a conexão. Confira o endereço nas configurações" e
+voltou sozinho minutos depois, sem ninguém tocar em nada. O endereço estava certo o tempo
+todo: o squid local estava de pé havia 17 horas, sem reinício. A mensagem mandou depurar
+justamente o que não tinha problema.
+
+Causa: o `requests` usa `ProxyError` para dois casos opostos, e o texto de topo é
+idêntico nos dois (`Unable to connect to proxy`). Só a causa aninhada os separa:
+
+- `NewConnectionError: [Errno 111] Connection refused` — o proxy está inalcançável.
+  Aqui, sim, conferir o endereço resolve.
+- `OSError('Tunnel connection failed: 503 Service Unavailable')` — o proxy **respondeu** e
+  recusou abrir o túnel `CONNECT` até o destino. O endereço está certo; quem falhou foi o
+  proxy ao alcançar o upstream, normalmente por DNS ou instabilidade momentânea. Foi este
+  o caso — daí o retorno espontâneo.
+
+`_proxy_message()` separa os dois por regex sobre o `Tunnel connection failed: NNN`, e o
+código devolvido vira parte da frase: 407 vira instrução de credenciais, 502/503/504
+avisam que costuma ser passageiro, o resto mostra o código cru. Reproduzir não precisa de
+proxy de verdade — um socket que aceita a conexão e responde a linha de status desejada
+já produz a exceção exata.
+
+Regra que fica: **quando uma exceção cobre duas causas com ações opostas, a mensagem
+precisa olhar a causa aninhada.** Escolher uma das duas e escrever a frase como se fosse
+sempre ela transforma o erro em pista falsa.
+
 ## Processo: como verificar de verdade
 
 **Meça pixels em vez de confiar no olho.** "Parece cortado" virou certeza ao comparar as
