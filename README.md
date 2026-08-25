@@ -1,7 +1,8 @@
 # Sussurro
 
 Ditado por voz global para Linux/X11. Segure **Pause/Break**, fale, solte — o áudio vai
-para o Whisper na Groq e o texto volta colado onde o cursor estiver.
+para o Whisper (na Groq ou num servidor seu) e o texto volta colado onde o cursor
+estiver.
 
 ![Estados da cápsula: gravando, transcrevendo, concluído e erro](docs/estados.png)
 
@@ -11,8 +12,8 @@ para o Whisper na Groq e o texto volta colado onde o cursor estiver.
    do teclado, e começa a gravar pelo PipeWire em 16 kHz mono.
 2. **Fale** — a cápsula flutuante mostra o nível do microfone e o tempo decorrido.
    `Esc` cancela sem enviar nada.
-3. **Solte** — o áudio vira WAV em memória e sobe para
-   `api.groq.com/openai/v1/audio/transcriptions`.
+3. **Solte** — o áudio vira WAV em memória e sobe para o serviço configurado: a Groq
+   (`api.groq.com`) ou um servidor próprio compatível com a API da OpenAI.
 4. **Pronto** — o texto vai para a área de transferência e é colado na janela ativa:
    `Ctrl+V`, ou `Ctrl+Shift+V` quando o que está em foco é um terminal.
 
@@ -34,6 +35,7 @@ o ícone e pergunta se deve iniciar junto com a sessão — use `--autostart` ou
 Na primeira execução a janela de configurações abre sozinha: cole a chave criada em
 [console.groq.com/keys](https://console.groq.com/keys) e clique em **Testar**. Se a
 variável `GROQ_API_KEY` existir no ambiente, ela tem prioridade sobre a chave salva.
+Quem prefere não depender da nuvem escolhe **Servidor próprio** — veja abaixo.
 
 ## Requisitos
 
@@ -51,6 +53,7 @@ força um endereço específico.
 
 | Ajuste | O que faz |
 | --- | --- |
+| **Serviço** | Groq (nuvem) ou um servidor próprio compatível com a API da OpenAI |
 | **Modelo** | `whisper-large-v3-turbo` (padrão) ou `whisper-large-v3` |
 | **Idioma** | Fixar o idioma acelera e evita traduções acidentais |
 | **Vocabulário** | Nomes e siglas que o modelo costuma errar (limite de 224 tokens) |
@@ -69,6 +72,18 @@ existem só no JSON: `min_duration` (0,45 s — abaixo disso o toque é ignorado
 
 O ícone na bandeja também grava sem o teclado (útil para trechos longos), copia do
 histórico, desliga o atalho temporariamente e encerra o aplicativo.
+
+### Servidor próprio
+
+Além da Groq, o Sussurro fala com qualquer serviço que implemente
+`POST /v1/audio/transcriptions` no formato da OpenAI — um
+[whisper-turbo-api](https://github.com/DanielFreitasDev/whisper-turbo-api) com
+faster-whisper na sua GPU, por exemplo. Escolha **Servidor próprio** em *Serviço de transcrição*, informe o
+endereço (aceita com ou sem `/v1` no fim, e assume `https://` se faltar o esquema) e a
+chave que esse servidor exige. As chaves da Groq e do servidor são guardadas
+separadamente: alternar entre os serviços não apaga nenhuma das duas. O modelo
+selecionado é enviado como está — se o servidor não o tiver, o erro dele aparece na
+cápsula.
 
 ## Interface
 

@@ -105,7 +105,7 @@ class Sussurro(QObject):
     # -- ciclo ---------------------------------------------------------------
     def _start_recording(self) -> None:
         if not self.cfg.resolved_key():
-            self.overlay.show_error("Configure sua chave da API Groq.")
+            self.overlay.show_error("Configure sua chave de API.")
             self.open_settings()
             return
         self.overlay.begin()
@@ -148,6 +148,7 @@ class Sussurro(QObject):
             prompt=self.cfg.prompt,
             temperature=self.cfg.temperature,
             proxy=self.cfg.proxy,
+            base_url=self.cfg.base_url(),
         )
 
     def cancel(self) -> None:
@@ -234,7 +235,7 @@ class Sussurro(QObject):
         self.open_settings()
         self.tray.notify(
             "Sussurro está pronto",
-            "Cole sua chave da API Groq para começar a ditar.",
+            "Cole sua chave de API para começar a ditar.",
         )
 
     def _apply_config(self) -> None:

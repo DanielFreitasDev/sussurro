@@ -1,4 +1,4 @@
-"""Cliente da API de transcrição da Groq (Whisper)."""
+"""Cliente das APIs de transcrição (Whisper): Groq ou servidor próprio."""
 
 from __future__ import annotations
 
@@ -12,10 +12,38 @@ from urllib.parse import urlparse
 import requests
 from PySide6.QtCore import QObject, Signal
 
+from . import __version__
+
 ENDPOINT = "https://api.groq.com/openai/v1/audio/transcriptions"
 MODELS_ENDPOINT = "https://api.groq.com/openai/v1/models"
 TIMEOUT = (10, 90)          # (conexão, leitura)
 MAX_UPLOAD = 25 * 1024 * 1024
+
+# Proteção anti-bot (Cloudflare) na frente de servidores próprios barra
+# User-Agents de SDKs de IA; identificar o aplicativo passa — e loga melhor.
+HEADERS = {"User-Agent": f"sussurro/{__version__}"}
+
+
+def _service_base(base_url: str) -> str:
+    """Normaliza a URL do servidor próprio: aceita sem esquema e com /v1 no fim."""
+    base = base_url.strip().rstrip("/")
+    if not base:
+        return ""
+    if "://" not in base:
+        base = "https://" + base
+    if base.endswith("/v1"):
+        base = base[: -len("/v1")].rstrip("/")
+    return base
+
+
+def _transcriptions_url(base_url: str = "") -> str:
+    base = _service_base(base_url)
+    return f"{base}/v1/audio/transcriptions" if base else ENDPOINT
+
+
+def _models_url(base_url: str = "") -> str:
+    base = _service_base(base_url)
+    return f"{base}/v1/models" if base else MODELS_ENDPOINT
 
 
 class TranscriptionError(Exception):
@@ -27,7 +55,7 @@ _ENV_PROXY_VARS = ("https_proxy", "HTTPS_PROXY", "http_proxy", "HTTP_PROXY",
                    "all_proxy", "ALL_PROXY")
 
 
-def proxies_for(explicit: str = "") -> dict[str, str] | None:
+def proxies_for(explicit: str = "", url: str = ENDPOINT) -> dict[str, str] | None:
     """Proxy a usar, em ordem: ajuste do app, ambiente, configuração do KDE.
 
     Aplicativos iniciados pela sessão gráfica não herdam o `http_proxy` que o
@@ -38,13 +66,13 @@ def proxies_for(explicit: str = "") -> dict[str, str] | None:
         return {"http": explicit, "https": explicit}
     if any(os.environ.get(var) for var in _ENV_PROXY_VARS):
         return None                      # o requests já resolve pelo ambiente
-    desktop = _desktop_proxy()
+    desktop = _desktop_proxy(url)
     if desktop:
         return {"http": desktop, "https": desktop}
     return None
 
 
-def _desktop_proxy() -> str:
+def _desktop_proxy(url: str = ENDPOINT) -> str:
     """Lê o proxy manual configurado no KDE (~/.config/kioslaverc)."""
     path = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "kioslaverc"
     try:
@@ -62,7 +90,7 @@ def _desktop_proxy() -> str:
     if values.get("ProxyType") != "1":
         return ""
 
-    host = urlparse(ENDPOINT).hostname or ""
+    host = urlparse(url).hostname or ""
     for entry in values.get("NoProxyFor", "").split(","):
         entry = entry.strip().lstrip(".")
         if entry and (host == entry or host.endswith("." + entry)):
@@ -79,12 +107,14 @@ def _desktop_proxy() -> str:
 
 
 def transcribe(wav: bytes, *, api_key: str, model: str, language: str = "",
-               prompt: str = "", temperature: float = 0.0, proxy: str = "") -> str:
+               prompt: str = "", temperature: float = 0.0, proxy: str = "",
+               base_url: str = "") -> str:
     if not api_key:
         raise TranscriptionError("Nenhuma chave de API configurada.")
     if len(wav) > MAX_UPLOAD:
         raise TranscriptionError("Áudio longo demais para o limite de 25 MB da conta.")
 
+    url = _transcriptions_url(base_url)
     data = {
         "model": model,
         "temperature": str(temperature),
@@ -99,18 +129,18 @@ def transcribe(wav: bytes, *, api_key: str, model: str, language: str = "",
     for attempt in range(2):
         try:
             resp = requests.post(
-                ENDPOINT,
-                headers={"Authorization": f"Bearer {api_key}"},
+                url,
+                headers={"Authorization": f"Bearer {api_key}", **HEADERS},
                 data=data,
                 files={"file": ("audio.wav", wav, "audio/wav")},
                 timeout=TIMEOUT,
-                proxies=proxies_for(proxy),
+                proxies=proxies_for(proxy, url),
             )
         except requests.Timeout:
             last_error = TranscriptionError("A API demorou demais para responder.")
             exc_retry = True
         except requests.RequestException as exc:
-            last_error = TranscriptionError(_network_message(exc, proxy))
+            last_error = TranscriptionError(_network_message(exc, proxy, url))
             exc_retry = True
         else:
             if resp.status_code == 200:
@@ -119,10 +149,10 @@ def transcribe(wav: bytes, *, api_key: str, model: str, language: str = "",
                 except ValueError:
                     raise TranscriptionError("Resposta inesperada da API.")
             if resp.status_code in (500, 502, 503, 504) and attempt == 0:
-                last_error = TranscriptionError(_api_message(resp))
+                last_error = TranscriptionError(_api_message(resp, url))
                 exc_retry = True
             else:
-                raise TranscriptionError(_api_message(resp))
+                raise TranscriptionError(_api_message(resp, url))
 
         if exc_retry and attempt == 0:
             time.sleep(0.8)
@@ -130,19 +160,20 @@ def transcribe(wav: bytes, *, api_key: str, model: str, language: str = "",
     raise last_error or TranscriptionError("Falha desconhecida na transcrição.")
 
 
-def check_key(api_key: str, proxy: str = "") -> tuple[bool, str]:
+def check_key(api_key: str, proxy: str = "", base_url: str = "") -> tuple[bool, str]:
     """Valida a chave listando os modelos disponíveis."""
     if not api_key:
         return False, "Informe uma chave de API."
+    url = _models_url(base_url)
     try:
         resp = requests.get(
-            MODELS_ENDPOINT,
-            headers={"Authorization": f"Bearer {api_key}"},
+            url,
+            headers={"Authorization": f"Bearer {api_key}", **HEADERS},
             timeout=(10, 20),
-            proxies=proxies_for(proxy),
+            proxies=proxies_for(proxy, url),
         )
     except requests.RequestException as exc:
-        return False, _network_message(exc, proxy)
+        return False, _network_message(exc, proxy, url)
     if resp.status_code == 200:
         try:
             ids = {m.get("id") for m in resp.json().get("data", [])}
@@ -152,10 +183,10 @@ def check_key(api_key: str, proxy: str = "") -> tuple[bool, str]:
         if whisper:
             return True, "Chave válida — modelos: " + ", ".join(whisper)
         return True, "Chave válida."
-    return False, _api_message(resp)
+    return False, _api_message(resp, url)
 
 
-def _api_message(resp: requests.Response) -> str:
+def _api_message(resp: requests.Response, url: str = ENDPOINT) -> str:
     detail = ""
     try:
         payload = resp.json()
@@ -173,7 +204,7 @@ def _api_message(resp: requests.Response) -> str:
         extra = f" Tente em {retry}s." if retry else ""
         return f"Limite de uso da conta atingido.{extra}"
     if resp.status_code >= 500:
-        return "A Groq está instável no momento."
+        return f"O servidor {_host(url)} está instável no momento."
     return detail or f"Erro HTTP {resp.status_code}."
 
 
@@ -182,22 +213,22 @@ def _api_message(resp: requests.Response) -> str:
 _TUNNEL_RE = re.compile(r"Tunnel connection failed: (\d{3}) ([^'\"\\)]*)")
 
 
-def _network_message(exc: Exception, proxy: str = "") -> str:
+def _network_message(exc: Exception, proxy: str = "", url: str = ENDPOINT) -> str:
     """Traduz erros de conexão para algo que aponte a causa provável."""
     if isinstance(exc, requests.exceptions.ProxyError):
-        return _proxy_message(exc, proxy)
+        return _proxy_message(exc, proxy, url)
     if isinstance(exc, requests.exceptions.SSLError):
-        return "Falha no TLS ao falar com a Groq — pode ser inspeção do proxy."
+        return f"Falha no TLS ao falar com {_host(url)} — pode ser inspeção do proxy."
     if isinstance(exc, requests.exceptions.ConnectionError):
-        address = _proxy_address(proxy)
+        address = _proxy_address(proxy, url)
         if address:
-            return f"Sem acesso a {_host()} pelo proxy {address}."
-        return (f"Sem acesso a {_host()}. Se sua rede exige proxy, informe-o "
+            return f"Sem acesso a {_host(url)} pelo proxy {address}."
+        return (f"Sem acesso a {_host(url)}. Se sua rede exige proxy, informe-o "
                 "nas configurações.")
     return f"Falha de rede: {_short(exc)}"
 
 
-def _proxy_message(exc: Exception, proxy: str = "") -> str:
+def _proxy_message(exc: Exception, proxy: str = "", url: str = ENDPOINT) -> str:
     """Distingue proxy inalcançável de proxy que recusou o túnel.
 
     Os dois casos pedem ações opostas: conferir o endereço só resolve o
@@ -206,7 +237,7 @@ def _proxy_message(exc: Exception, proxy: str = "") -> str:
     """
     match = _TUNNEL_RE.search(str(exc))
     if not match:
-        address = _proxy_address(proxy)
+        address = _proxy_address(proxy, url)
         onde = f" {address}" if address else ""
         return (f"Não foi possível conectar ao proxy{onde}. Confira o endereço "
                 "nas configurações.")
@@ -218,14 +249,14 @@ def _proxy_message(exc: Exception, proxy: str = "") -> str:
     # 500 entra aqui porque o squid o devolve quando nenhum pai está de pé
     # (HIER_NONE no log) — transitório como os 5xx de gateway, não erro de uso.
     if code in ("500", "502", "503", "504"):
-        return (f"O proxy não alcançou {_host()} agora ({code} {reason}). "
+        return (f"O proxy não alcançou {_host(url)} agora ({code} {reason}). "
                 "Costuma ser passageiro — tente de novo.")
-    return f"O proxy recusou o túnel até {_host()} ({code} {reason})."
+    return f"O proxy recusou o túnel até {_host(url)} ({code} {reason})."
 
 
-def _proxy_address(proxy: str = "") -> str:
+def _proxy_address(proxy: str = "", url: str = ENDPOINT) -> str:
     """Endereço do proxy em uso — inclusive quando quem resolve é o requests."""
-    mapping = proxies_for(proxy)
+    mapping = proxies_for(proxy, url)
     if mapping:
         url = mapping.get("https") or mapping.get("http") or ""
     else:
@@ -239,8 +270,8 @@ def _proxy_address(proxy: str = "") -> str:
     return f"{parsed.hostname}:{parsed.port}" if parsed.port else parsed.hostname
 
 
-def _host() -> str:
-    return urlparse(ENDPOINT).hostname or "a Groq"
+def _host(url: str = ENDPOINT) -> str:
+    return urlparse(url).hostname or "o servidor"
 
 
 def _short(exc: Exception) -> str:

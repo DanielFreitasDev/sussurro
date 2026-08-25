@@ -29,7 +29,7 @@ independentes, cada um com uma responsabilidade:
 | --- | --- |
 | `hotkey.py` | `XGrabKey` da tecla escolhida numa conexão X11 própria; emite `pressed`/`released`/`cancelled` |
 | `recorder.py` | `pw-record` em subprocesso, PCM cru do stdout, nível do sinal em tempo real |
-| `transcriber.py` | POST multipart para a API da Groq, com uma retentativa e erros traduzidos |
+| `transcriber.py` | POST multipart para o serviço ativo (Groq ou servidor próprio compatível com OpenAI), com uma retentativa e erros traduzidos |
 | `paste.py` | Descobre a janela em foco (WM_CLASS) e envia a colagem por XTEST |
 | `overlay.py` | Cápsula flutuante, pintada à mão quadro a quadro |
 | `settings_window.py` | Janela sem moldura, widgets animados próprios |
@@ -129,9 +129,9 @@ estado da cápsula, e `SUSSURRO_TEMA=dark|light` força a paleta.
 
 ## Segurança
 
-- A chave da API vive em `~/.config/sussurro/config.json` (modo `600`) ou na variável
-  `GROQ_API_KEY`. **Nunca** versione nenhuma das duas — o `.gitignore` cobre o arquivo,
-  mas confira antes de qualquer commit.
+- As chaves de API (Groq e servidor próprio) vivem em `~/.config/sussurro/config.json`
+  (modo `600`); a da Groq também pode vir da variável `GROQ_API_KEY`. **Nunca** versione
+  nenhuma delas — o `.gitignore` cobre o arquivo, mas confira antes de qualquer commit.
 - O aplicativo faz grab de teclado e abre o microfone. Mudanças em `hotkey.py` não podem
   ampliar a captura para além da tecla configurada: interceptar o teclado inteiro
   transformaria isto num keylogger.

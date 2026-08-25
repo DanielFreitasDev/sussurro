@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFrame,
 
 from . import __version__, history, theme
 from .config import (HOTKEYS, LANGUAGES, MODELS, PASTE_MODES, RESULT_FEEDBACK,
-                     THEMES, Config)
+                     SERVICES, THEMES, Config)
 from .recorder import list_sources
 from .transcriber import check_key
 
@@ -464,6 +464,10 @@ class SettingsWindow(QWidget):
     def __init__(self, cfg: Config) -> None:
         super().__init__(None)
         self.cfg = cfg
+        # Uma chave por serviço: alternar entre Groq e servidor próprio não
+        # apaga a do outro — o campo só mostra a do serviço escolhido.
+        self._keys = {"groq": cfg.api_key, "custom": cfg.custom_api_key}
+        self._service_shown = cfg.service if cfg.service in dict(SERVICES) else "groq"
         self.setObjectName("root")
         self.setWindowTitle("Sussurro — Configurações")
         self.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint)
@@ -512,7 +516,7 @@ class SettingsWindow(QWidget):
         titles.setSpacing(2)
         title = QLabel("Sussurro")
         title.setObjectName("title")
-        subtitle = QLabel(f"Ditado por voz com Groq Whisper · v{__version__}")
+        subtitle = QLabel(f"Ditado por voz com Whisper · v{__version__}")
         subtitle.setObjectName("subtitle")
         titles.addWidget(title)
         titles.addWidget(subtitle)
@@ -605,6 +609,24 @@ class SettingsWindow(QWidget):
 
     def _build_connection(self) -> None:
         card = self._card("Conexão")
+        self.service_combo = _Combo()
+        for value, label in SERVICES:
+            self.service_combo.addItem(label, value)
+        self._row(card, "Serviço de transcrição", self.service_combo)
+
+        self.url_box = QWidget()
+        url_layout = QVBoxLayout(self.url_box)
+        url_layout.setContentsMargins(0, 0, 0, 0)
+        url_layout.setSpacing(12)
+        self.url_edit = QLineEdit()
+        self.url_edit.setPlaceholderText("https://whisper.exemplo.com")
+        self._row(url_layout, "Endereço do servidor", self.url_edit,
+                  "Qualquer API compatível com a da OpenAI — com ou sem /v1 no fim.")
+        card.addWidget(self.url_box)
+
+        self.key_caption = QLabel("Chave da API Groq")
+        self.key_caption.setObjectName("field")
+        card.addWidget(self.key_caption)
         self.key_edit = QLineEdit()
         self.key_edit.setEchoMode(QLineEdit.EchoMode.Password)
         self.key_edit.setPlaceholderText("gsk_…")
@@ -624,13 +646,17 @@ class SettingsWindow(QWidget):
         row.addWidget(self.test_btn)
         holder = QWidget()
         holder.setLayout(row)
-        self._row(card, "Chave da API Groq", holder,
-                  "Crie em console.groq.com/keys · a variável de ambiente "
-                  "GROQ_API_KEY, se existir, tem prioridade.")
+        card.addWidget(holder)
+        self.key_hint = QLabel("")
+        self.key_hint.setObjectName("hint")
+        self.key_hint.setWordWrap(True)
+        card.addWidget(self.key_hint)
         self.key_status = QLabel("")
         self.key_status.setObjectName("hint")
         self.key_status.setWordWrap(True)
         card.addWidget(self.key_status)
+
+        self.service_combo.currentIndexChanged.connect(self._on_service_changed)
 
         self.proxy_edit = QLineEdit()
         self.proxy_edit.setPlaceholderText("http://127.0.0.1:3128")
@@ -718,8 +744,29 @@ class SettingsWindow(QWidget):
         self.refresh_history()
 
     # -- dados ---------------------------------------------------------------
+    def _on_service_changed(self) -> None:
+        service = self.service_combo.currentData() or "groq"
+        if service != self._service_shown:
+            self._keys[self._service_shown] = self.key_edit.text().strip()
+            self._service_shown = service
+            self.key_edit.setText(self._keys.get(service, ""))
+            self.key_status.setText("")
+        custom = service == "custom"
+        self.url_box.setVisible(custom)
+        self.key_caption.setText(
+            "Chave da API do servidor" if custom else "Chave da API Groq")
+        self.key_edit.setPlaceholderText("sk-…" if custom else "gsk_…")
+        self.key_hint.setText(
+            "Enviada como Bearer no cabeçalho Authorization."
+            if custom else
+            "Crie em console.groq.com/keys · a variável de ambiente "
+            "GROQ_API_KEY, se existir, tem prioridade.")
+
     def _load_values(self) -> None:
-        self.key_edit.setText(self.cfg.api_key)
+        self._select(self.service_combo, self._service_shown)
+        self.key_edit.setText(self._keys.get(self._service_shown, ""))
+        self.url_edit.setText(self.cfg.custom_url)
+        self._on_service_changed()
         self.proxy_edit.setText(self.cfg.proxy)
         self._select(self.model_combo, self.cfg.model)
         self._select(self.lang_combo, self.cfg.language)
@@ -777,13 +824,21 @@ class SettingsWindow(QWidget):
 
     # -- ações ---------------------------------------------------------------
     def _test_key(self) -> None:
-        key = self.key_edit.text().strip() or self.cfg.resolved_key()
+        key = self.key_edit.text().strip()
+        if self.service_combo.currentData() == "custom":
+            base = self.url_edit.text().strip()
+            if not base:
+                self._on_key_checked(False, "Informe o endereço do servidor.")
+                return
+        else:
+            key = key or (os.environ.get("GROQ_API_KEY") or "").strip()
+            base = ""
         proxy = self.proxy_edit.text().strip()
         self.test_btn.setEnabled(False)
         self.key_status.setText("Verificando…")
 
         def job() -> None:
-            ok, message = check_key(key, proxy)
+            ok, message = check_key(key, proxy, base)
             self._checker.done.emit(ok, message)
 
         threading.Thread(target=job, daemon=True).start()
@@ -796,7 +851,11 @@ class SettingsWindow(QWidget):
         self.key_status.setStyleSheet(f"color: {theme.css(tone)}; font-size: 12px;")
 
     def _save(self) -> None:
-        self.cfg.api_key = self.key_edit.text().strip()
+        self._keys[self._service_shown] = self.key_edit.text().strip()
+        self.cfg.service = self.service_combo.currentData() or "groq"
+        self.cfg.api_key = self._keys.get("groq", "")
+        self.cfg.custom_api_key = self._keys.get("custom", "")
+        self.cfg.custom_url = self.url_edit.text().strip()
         self.cfg.proxy = self.proxy_edit.text().strip()
         self.cfg.model = self.model_combo.currentData()
         self.cfg.language = self.lang_combo.currentData()

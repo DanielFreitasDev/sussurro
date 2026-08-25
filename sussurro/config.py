@@ -16,6 +16,11 @@ AUTOSTART_FILE = (
     / "sussurro.desktop"
 )
 
+SERVICES = [
+    ("groq", "Groq (nuvem)"),
+    ("custom", "Servidor próprio (compatível com OpenAI)"),
+]
+
 MODELS = [
     ("whisper-large-v3-turbo", "Turbo — rápido, ótimo custo-benefício"),
     ("whisper-large-v3", "Large v3 — máxima precisão"),
@@ -78,7 +83,10 @@ TERMINAL_CLASSES = {
 
 @dataclass
 class Config:
+    service: str = "groq"             # groq | custom
     api_key: str = ""
+    custom_url: str = ""              # servidor próprio, ex.: https://whisper.exemplo.com
+    custom_api_key: str = ""
     model: str = "whisper-large-v3-turbo"
     language: str = "pt"
     prompt: str = ""
@@ -123,8 +131,14 @@ class Config:
 
     # -- derivados -----------------------------------------------------------
     def resolved_key(self) -> str:
-        """A chave do ambiente tem prioridade sobre a salva em disco."""
+        """A chave do serviço ativo; no Groq, a do ambiente tem prioridade."""
+        if self.service == "custom":
+            return self.custom_api_key.strip()
         return (os.environ.get("GROQ_API_KEY") or self.api_key or "").strip()
+
+    def base_url(self) -> str:
+        """URL do servidor próprio quando ele é o serviço ativo; vazio = Groq."""
+        return self.custom_url.strip() if self.service == "custom" else ""
 
     @property
     def autostart_enabled(self) -> bool:
