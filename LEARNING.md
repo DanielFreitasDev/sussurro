@@ -2,7 +2,8 @@
 
 Diário técnico deste projeto: o que só se descobre construindo, com o sintoma que levou
 até lá. O [CLAUDE.md](CLAUDE.md) resume as regras; aqui está o porquê de cada uma, com
-números medidos nesta máquina (Ubuntu 24.04, KDE Plasma sobre X11, PipeWire 1.0.5).
+números medidos nesta máquina — primeiro no Ubuntu 24.04 (Plasma sobre X11, PipeWire
+1.0.5) e, da seção *Wayland* em diante, no Ubuntu 26.04 (Plasma 6.6, Wayland puro).
 
 ## X11 e teclado
 
@@ -77,6 +78,99 @@ mãos dá para escolher `Ctrl+Shift+V` em terminais, onde `Ctrl+V` não cola.
 
 **A cápsula precisa ser override-redirect** (`X11BypassWindowManagerHint`). Uma janela
 comum roubaria o foco da janela do usuário, e a colagem iria para o lugar errado.
+
+## Wayland: o compositor é o dono do teclado
+
+O Ubuntu 26.04 não empacota mais sessão X11: `/usr/share/xsessions/` não existe e só há
+`kwin-wayland`. Não existe "voltar para o X11" — ou o aplicativo aprende Wayland, ou
+para de funcionar. As duas funções que ele tira do sistema (capturar uma tecla global e
+sintetizar a colagem) são exatamente as duas que o Wayland reserva ao compositor.
+
+**O `XGrabKey` continua funcionando e continua surdo.** A conexão X abre normal pelo
+XWayland, o grab é aceito, nenhum evento chega. Clientes X só recebem teclas quando a
+janela em foco também é X — e hoje quase nenhuma é (`xlsclients` vem vazio numa sessão
+inteira). O Plasma tem uma chave para afrouxar isso (`kcm_kwinxwayland`, que escreve
+`[Xwayland] XwaylandEavesdrops` no `kwinrc`), mas ela entrega as teclas escolhidas a
+*todos* os aplicativos X11 de uma vez. Para um programa cuja regra é não virar
+keylogger, pagar esse preço para si mesmo e para o desktop inteiro não faz sentido.
+
+**O XTEST é descartado sem erro nenhum.** O Xwayland do Plasma 6 roda com
+`-enable-ei-portal` (confira com `pgrep -a Xwayland`): a injeção é desviada para o portal
+RemoteDesktop, que, sem permissão registrada, simplesmente não faz nada. Não há exceção,
+não há código de erro — a colagem só não acontece. O único vestígio está no journal:
+
+```
+xdp-kde-remotedesktop: MegaAuth: Failed to lookup permissions: "No entry for remote-desktop"
+xdp-kde-remotedesktop: Only stream input
+```
+
+**`SetPresent` é o que instala o grab; sem ele o registro é decorativo.** O atalho global
+passou a ser registrado no KGlobalAccel — o mesmo serviço que atende os atalhos do
+Plasma, e que expõe `globalShortcutPressed` *e* `globalShortcutReleased`, que é o par que
+o ditado "segure e fale" exige. O registro tem três passos e uma armadilha:
+
+```python
+kga.doRegister(action)                       # cria a ação
+kga.setShortcut(action, [qt_key], 2 | 4)     # SetPresent | NoAutoloading
+```
+
+Com `flags=4` (só `NoAutoloading`) tudo *parece* dar certo: `setShortcut` devolve a tecla
+pedida, o `kglobalshortcutsrc` ganha a linha, e `isGlobalShortcutAvailable` passa a
+responder `False` — a tecla consta como ocupada. E nada dispara, porque o grab nunca foi
+instalado no compositor. O oráculo que separa os dois casos é `isActive()` no objeto do
+componente: `False` com `flags=4`, `True` com `flags=6`. Compare sempre com um componente
+que funciona (`/component/plasmashell` responde `True`).
+
+Duas outras recusas silenciosas na mesma família: `setForeignShortcut` escreve a
+configuração mas não ativa nada, e uma ação nova não consegue tomar uma tecla que outra
+ação *do mesmo componente* já segura — `setShortcut` devolve `[0]`, e limpar o arquivo no
+disco não adianta, porque o daemon mantém o estado em memória e reescreve o arquivo.
+Remova pelo D-Bus (`unRegister`), não pelo `kwriteconfig6`.
+
+**O auto-repeat deixou de ser problema.** No X11 era preciso desligar o repeat da tecla
+(veja acima) porque ele fabricava pares press/release. O KWin manda a repetição num sinal
+à parte, `globalShortcutRepeated`, que o `hotkey.py` simplesmente não escuta: `pressed` e
+`released` chegam uma vez cada. Medido aqui: 1,51 s de tecla segurada = 1 press, 24
+repeats, 1 release.
+
+**A cápsula precisa do XWayland.** No Wayland uma janela comum não pode escolher onde
+fica na tela — o compositor decide —, e `X11BypassWindowManagerHint` é um conceito X11.
+Sem `layer-shell` (que não tem binding para PySide6), a saída é rodar a interface inteira
+sobre XWayland com `QT_QPA_PLATFORM=xcb`: a janela override-redirect volta a mandar na
+própria posição e a cápsula aparece exatamente como antes. O atalho e a colagem não
+dependem disso — falam D-Bus, não X.
+
+**A detecção de terminal morreu.** `active_window_class()` usava o WM_CLASS da janela em
+foco; no Wayland o compositor não conta a ninguém quem está em foco, e o XWayland só
+enxerga clientes X. O KWin expõe `queryWindowInfo`, mas ela exige que o *usuário* clique
+numa janela. O modo "automático" passa a cair no Ctrl+V, e quem dita em terminal precisa
+escolher Ctrl+Shift+V nas configurações.
+
+### QtDBus do PySide6: o que ele faz e o que não faz
+
+Três descobertas que custaram a tarde inteira, na ordem em que aparecem:
+
+**Conectar sinal exige o macro `SLOT()`.** `QDBusConnection.connect(...)` recusa qualquer
+string de slot montada à mão — `b"onSig(...)"`, `b"1onSig(...)"`, todas levantam
+`ValueError: called with wrong argument values`, que não diz nada sobre a causa. O que
+funciona é `from PySide6.QtCore import SLOT` e passar `SLOT("onSig(QString,QString,qlonglong)")`,
+com o slot declarado por `@Slot(...)` e com assinatura idêntica à do sinal D-Bus.
+Alternativa mais limpa quando há introspecção: `iface.NomeDoSinal.connect(callable)`.
+
+**Chame pelo metaobject, não por `.call()`.** `QDBusInterface.call("setShortcut", ...)`
+manda a lista como `av` e a flag como `i`; o KGlobalAccel espera `ai` e `u` e recusa a
+mensagem inteira por assinatura errada. `iface.setShortcut(...)` — a forma dinâmica —
+converte pelos tipos que vieram da introspecção e acerta. Foi essa diferença que fez o
+atalho registrar em teste e falhar dentro do aplicativo, com o mesmo código aparente.
+
+**`uint` dentro de `a{sv}` é impossível.** Nenhum valor Python vira `u`: `int` vira `i`,
+`bool` vira `b`, `float` vira `d`, inteiro grande vira `x`, `QDBusVariant` vira `v`
+aninhado — o portal responde `Expected type 'u' for option 'types', got 'i'` para todos.
+Também não adianta "lavar" o tipo pedindo um `u` ao próprio barramento e devolvendo o
+`QDBusVariant` recebido: ele chega como `v`. Como o portal RemoteDesktop exige
+`{"types": u, "persist_mode": u}`, e omitir `types` faz o KDE conceder `devices: 0`
+(sessão sem teclado), o `portal.py` usa `jeepney` — D-Bus puro em Python, 520 KB, sem
+código compilado — só para essa conversa. O resto do aplicativo segue no QtDBus.
 
 ## Áudio com PipeWire
 

@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFrame,
                                QVBoxLayout, QWidget)
 
 from . import __version__, history, theme
+from .hotkey import supports_key
 from .config import (DATA_DIR, HOTKEYS, LANGUAGES, MODELS, PASTE_MODES,
                      RESULT_FEEDBACK, SERVICES, THEMES, Config)
 from .recorder import list_sources
@@ -745,6 +746,11 @@ class SettingsWindow(QWidget):
         card = self._card("Atalho e áudio")
         self.hotkey_combo = _Combo()
         for value, label in HOTKEYS:
+            # No Wayland o atalho é registrado no KGlobalAccel, que não aceita
+            # modificadoras sozinhas; oferecer Ctrl direito ali seria oferecer
+            # algo que falha só depois de salvo.
+            if not supports_key(value):
+                continue
             self.hotkey_combo.addItem(label, value)
         self._row(card, "Tecla de ditado (segure para falar)", self.hotkey_combo)
 

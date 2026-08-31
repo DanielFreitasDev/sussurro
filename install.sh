@@ -20,10 +20,10 @@ if [[ ! -x "$ROOT/.venv/bin/python" ]]; then
   fi
 fi
 if command -v uv >/dev/null 2>&1; then
-  uv pip install --quiet --python "$ROOT/.venv/bin/python" pyside6 python-xlib requests
+  uv pip install --quiet --python "$ROOT/.venv/bin/python" pyside6 python-xlib requests jeepney
 else
   "$ROOT/.venv/bin/python" -m pip install --quiet --upgrade pip
-  "$ROOT/.venv/bin/python" -m pip install --quiet pyside6 python-xlib requests
+  "$ROOT/.venv/bin/python" -m pip install --quiet pyside6 python-xlib requests jeepney
 fi
 
 info "Instalando o lançador em $BIN_DIR/sussurro"

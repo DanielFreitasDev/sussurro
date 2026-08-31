@@ -8,7 +8,7 @@ from PySide6.QtCore import QObject, QTimer, Signal
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import QApplication
 
-from . import history, paste, theme
+from . import history, paste, portal, session, theme
 from .config import HOTKEYS, Config
 from .hotkey import HotkeyListener
 from .overlay import Overlay
@@ -80,6 +80,9 @@ class Sussurro(QObject):
 
         if not self.cfg.resolved_key():
             QTimer.singleShot(400, self._first_run)
+
+        if session.is_wayland() and self.cfg.paste_mode != "none":
+            QTimer.singleShot(1500, portal.keyboard.prepare)
 
     # -- atalho --------------------------------------------------------------
     def _on_press(self) -> None:

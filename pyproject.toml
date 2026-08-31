@@ -3,7 +3,7 @@ name = "sussurro"
 version = "1.0.0"
 description = "Ditado por voz global no Linux com Groq Whisper"
 requires-python = ">=3.11"
-dependencies = ["pyside6>=6.6", "python-xlib>=0.33", "requests>=2.31"]
+dependencies = ["pyside6>=6.6", "python-xlib>=0.33", "requests>=2.31", "jeepney>=0.8"]
 
 [project.scripts]
 sussurro = "sussurro.__main__:main"

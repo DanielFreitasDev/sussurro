@@ -39,10 +39,29 @@ Quem prefere não depender da nuvem escolhe **Servidor próprio** — veja abaix
 
 ## Requisitos
 
-- Sessão **X11** (KDE, GNOME, XFCE…). Em Wayland puro o atalho global não funciona.
+- Sessão **X11** (KDE, GNOME, XFCE…) ou **Wayland no KDE Plasma 6** — veja a nota abaixo.
 - **PipeWire** com `pw-record` (pacote `pipewire-bin`).
 - **Python 3.11+**.
-- Só para o modo *digitar caractere a caractere*: `ydotool` com o serviço `ydotoold` ativo.
+- No X11, só para o modo *digitar caractere a caractere*: `ydotool` com o serviço
+  `ydotoold` ativo. No Wayland esse modo não precisa de nada além do próprio Sussurro.
+
+### No Wayland (KDE Plasma 6)
+
+No Wayland o compositor é o dono do teclado, então o Sussurro pede duas coisas ao
+sistema, ambas sem `sudo` e sem afrouxar a segurança do desktop:
+
+- **O atalho** é registrado no serviço de atalhos do Plasma, o mesmo dos atalhos do
+  sistema — ele aparece em *Configurações do Sistema → Atalhos*, como o de qualquer
+  aplicativo do KDE.
+- **A colagem** passa pelo portal do sistema. Na primeira execução aparece um pedido de
+  permissão para controlar a entrada; autorize (marcando *lembrar*, se houver) e ele não
+  volta a aparecer.
+
+Duas diferenças em relação ao X11: as teclas oferecidas são só as que o Plasma aceita
+como atalho (Pause, Scroll Lock, Menu, F13, F14, Insert — modificadoras sozinhas ficam
+de fora), e o modo *Automático* de colagem não detecta terminais, porque o Wayland não
+revela qual janela está em foco. Quem dita em terminal deve escolher **Ctrl + Shift + V**
+nas configurações. Outros ambientes Wayland (GNOME, Sway) ainda não são suportados.
 
 Em rede com proxy não é preciso configurar nada: o Sussurro usa as variáveis
 `http(s)_proxy` quando existem e, se não existirem — o caso de quem é iniciado pela
@@ -57,7 +76,7 @@ força um endereço específico.
 | **Modelo** | `whisper-large-v3-turbo` (padrão) ou `whisper-large-v3` |
 | **Idioma** | Fixar o idioma acelera e evita traduções acidentais |
 | **Vocabulário** | Nomes e siglas que o modelo costuma errar (limite de 224 tokens) |
-| **Tecla de ditado** | Pause, Scroll Lock, Menu, Ctrl/Alt/Super direitos, F13, F14, Insert |
+| **Tecla de ditado** | Pause, Scroll Lock, Menu, F13, F14, Insert (no X11, também Ctrl/Alt/Super direitos) |
 | **Microfone** | Qualquer fonte do PipeWire, ou a padrão do sistema |
 | **Como entregar o texto** | Automático, Ctrl+V, Ctrl+Shift+V, Shift+Insert, digitar, ou só copiar |
 | **Tema** | Acompanha o sistema, ou fixo em escuro/claro |
@@ -98,9 +117,14 @@ do Qt não têm transição.
 
 ## Solução de problemas
 
-**"A tecla já está reservada por outro programa"** — outro aplicativo fez o grab dela.
+**"A tecla já está reservada por outro programa"** — outro aplicativo ficou com ela.
 Escolha outro atalho nas configurações, ou libere a tecla em
 *Configurações do Sistema → Atalhos*.
+
+**No Wayland: "Permissão de controle do teclado negada"** — o pedido do portal foi
+recusado, então o texto é apenas copiado. Para pedir de novo, encerre e reabra o
+Sussurro; se o KDE tiver guardado a recusa, revise-a em *Configurações do Sistema →
+Aplicativos → Permissões de aplicativos*.
 
 **"Nenhum som captado"** — o microfone escolhido está mudo ou é o dispositivo errado.
 Confira em *Microfone*, ou rode `wpctl status`.
@@ -110,7 +134,9 @@ Troque *Como entregar o texto* para **Digitar caractere a caractere** (precisa d
 `ydotoold` ativo) ou para **Apenas copiar**.
 
 **Nada acontece ao segurar a tecla** — veja se o processo está vivo com
-`pgrep -af sussurro` e rode `sussurro` num terminal para ver os erros.
+`pgrep -af sussurro` e rode `sussurro` num terminal para ver os erros. No Wayland,
+confira também se a tecla aparece para o Sussurro em *Configurações do Sistema →
+Atalhos*.
 
 **"Sem acesso a api.groq.com"** — típico de rede com proxy. Funciona no terminal e falha
 quando inicia com a sessão? É porque o proxy só existe nas variáveis do shell. Preencha o

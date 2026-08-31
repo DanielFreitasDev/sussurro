@@ -12,7 +12,7 @@ from PySide6.QtGui import QIcon
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication
 
-from . import APP_ID, APP_NAME
+from . import APP_ID, APP_NAME, session
 from .app import Sussurro
 
 SOCKET = f"sussurro-{os.getuid()}"
@@ -31,10 +31,17 @@ def _already_running() -> bool:
 
 
 def main() -> int:
-    if os.environ.get("XDG_SESSION_TYPE") == "wayland" and not os.environ.get("DISPLAY"):
-        print("Sussurro precisa de uma sessão X11 (ou XWayland) para capturar o atalho.",
-              file=sys.stderr)
-        return 1
+    if session.is_wayland():
+        if not os.environ.get("DISPLAY"):
+            print("Sussurro precisa do XWayland para desenhar a cápsula. "
+                  "Ative-o na sessão do Plasma.", file=sys.stderr)
+            return 1
+        # A cápsula se posiciona sozinha na tela, e no Wayland uma janela
+        # comum não pode fazer isso — o compositor é quem decide onde ela
+        # fica. Sobre XWayland a janela override-redirect volta a mandar na
+        # própria posição, que é o que a cápsula precisa. O atalho e a colagem
+        # não dependem disso: falam D-Bus com o KWin e com o portal.
+        os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
 
     # WM_CLASS previsível: o KDE agrupa a janela com o atalho .desktop.
     os.environ.setdefault("RESOURCE_NAME", APP_ID)

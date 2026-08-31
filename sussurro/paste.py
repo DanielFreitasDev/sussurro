@@ -1,4 +1,9 @@
-"""Entrega do texto transcrito na janela ativa (área de transferência + XTEST)."""
+"""Entrega do texto transcrito na janela ativa.
+
+No X11 a colagem é um XTEST direto. No Wayland quem sintetiza a tecla é o
+compositor, através do portal (veja `portal.py`); o efeito para o usuário é o
+mesmo, mas a primeira colagem pede autorização uma única vez.
+"""
 
 from __future__ import annotations
 
@@ -10,6 +15,7 @@ import time
 from Xlib import X, XK, display
 from Xlib.ext import xtest
 
+from . import portal, session
 from .config import TERMINAL_CLASSES
 
 # Combinações suportadas: (modificadores, tecla)
@@ -19,9 +25,24 @@ _COMBOS = {
     "shift_insert": (("Shift_L",), "Insert"),
 }
 
+# As mesmas combinações em códigos evdev, que é o que o portal entende.
+_EVDEV_COMBOS = {
+    "ctrl_v": ([portal.KEY_LEFTCTRL], portal.KEY_V),
+    "ctrl_shift_v": ([portal.KEY_LEFTCTRL, portal.KEY_LEFTSHIFT], portal.KEY_V),
+    "shift_insert": ([portal.KEY_LEFTSHIFT], portal.KEY_INSERT),
+}
+
 
 def active_window_class() -> str:
-    """WM_CLASS da janela em foco, em minúsculas ("" se indisponível)."""
+    """WM_CLASS da janela em foco, em minúsculas ("" se indisponível).
+
+    No Wayland não há resposta: o compositor não conta a ninguém qual janela
+    está em foco, e o XWayland só enxerga clientes X — que hoje quase não
+    existem. O modo "automático" cai então no Ctrl+V, e quem usa terminal
+    precisa escolher Ctrl+Shift+V nas configurações.
+    """
+    if session.is_wayland():
+        return ""
     try:
         dsp = display.Display()
     except Exception:
@@ -67,7 +88,12 @@ def deliver(text: str, mode: str, on_done=None) -> None:
         return
 
     def job() -> None:
-        ok, err = (_type_text(text) if resolved == "type" else _send_combo(resolved))
+        if resolved == "type":
+            ok, err = (portal.keyboard.type_text(text) if session.is_wayland()
+                       else _type_text(text))
+        else:
+            ok, err = (_send_combo_wayland(resolved) if session.is_wayland()
+                       else _send_combo(resolved))
         if on_done:
             on_done(ok, err)
 
@@ -75,6 +101,11 @@ def deliver(text: str, mode: str, on_done=None) -> None:
 
 
 # -- implementação -----------------------------------------------------------
+def _send_combo_wayland(mode: str) -> tuple[bool, str]:
+    modifiers, key = _EVDEV_COMBOS.get(mode, _EVDEV_COMBOS["ctrl_v"])
+    return portal.keyboard.send_combo(modifiers, key)
+
+
 def _send_combo(mode: str) -> tuple[bool, str]:
     mods, key = _COMBOS.get(mode, _COMBOS["ctrl_v"])
     try:

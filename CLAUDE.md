@@ -7,8 +7,8 @@ de cada regra daqui.
 
 ## Stack e comandos
 
-Python 3.11+ com PySide6 (Qt 6), `python-xlib` e `requests`. Ambiente virtual em `.venv`,
-criado pelo `install.sh` (via `uv` se existir, senão `python -m venv`).
+Python 3.11+ com PySide6 (Qt 6), `python-xlib`, `requests` e `jeepney`. Ambiente virtual
+em `.venv`, criado pelo `install.sh` (via `uv` se existir, senão `python -m venv`).
 
 ```bash
 PYTHONPATH=. .venv/bin/python -m sussurro            # executa
@@ -27,10 +27,12 @@ independentes, cada um com uma responsabilidade:
 
 | Módulo | Responsabilidade |
 | --- | --- |
-| `hotkey.py` | `XGrabKey` da tecla escolhida numa conexão X11 própria; emite `pressed`/`released`/`cancelled` |
+| `hotkey.py` | Atalho global: `XGrabKey` numa conexão X11 própria **ou** KGlobalAccel por D-Bus no Wayland; emite `pressed`/`released`/`cancelled` |
 | `recorder.py` | `pw-record` em subprocesso, PCM cru do stdout, nível do sinal em tempo real |
 | `transcriber.py` | POST multipart para o serviço ativo (Groq ou servidor próprio compatível com OpenAI), com uma retentativa e erros traduzidos |
-| `paste.py` | Descobre a janela em foco (WM_CLASS) e envia a colagem por XTEST |
+| `paste.py` | Envia a colagem por XTEST (X11) ou pelo portal (Wayland); no X11 ainda descobre a janela em foco por WM_CLASS |
+| `portal.py` | Sessão do portal RemoteDesktop via `jeepney`: é quem sintetiza teclas no Wayland |
+| `session.py` | Única decisão de plataforma do projeto: a sessão é Wayland? |
 | `overlay.py` | Cápsula flutuante, pintada à mão quadro a quadro |
 | `settings_window.py` | Janela sem moldura, widgets animados próprios |
 | `tray.py` | Ícone de bandeja e menu |
@@ -42,8 +44,9 @@ independentes, cada um com uma responsabilidade:
 WAV em memória → upload → texto na área de transferência → colagem 90 ms depois.
 
 **Threads.** A interface vive só na thread principal. Rodam à parte: o laço X11 do atalho
-(`select` sobre o `fileno()` do Display), a leitura do stdout do `pw-record`, o request da
-API e o envio da colagem. Todas se comunicam por Signals do Qt — conexões em fila, porque
+(`select` sobre o `fileno()` do Display — no Wayland não há thread nenhuma, os sinais do
+KGlobalAccel chegam pelo laço de eventos do Qt), a leitura do stdout do `pw-record`, o
+request da API e o envio da colagem. Todas se comunicam por Signals do Qt — conexões em fila, porque
 os objetos moram na thread principal. Nunca toque em widget fora dela.
 
 **Áudio.** `pw-record --rate 16000 --channels 1 --format s16 -` entrega PCM cru (sem
@@ -70,12 +73,13 @@ Cada uma custou uma sessão de depuração. Não desfaça sem entender o motivo.
    aplicativo ignorava `SIGTERM` — e travaria o logout — só quando a janela de
    configurações estava aberta. Por isso existem `prepare_shutdown()` e a propriedade
    `sussurro_quitting` no QApplication.
-2. **O auto-repeat do X11 gera pares press/release falsos** enquanto a tecla está
+2. **(X11) O auto-repeat gera pares press/release falsos** enquanto a tecla está
    segurada (25/s no padrão), o que encerraria a gravação no meio da fala. A solução é
    `change_keyboard_control(key=..., auto_repeat_mode=Off)` só para a tecla do atalho,
    restaurando ao sair. `XkbSetDetectableAutoRepeat` não é opção: `python-xlib` 0.33 não
-   expõe a extensão xkb.
-3. **`select()` sozinho perde eventos do X11.** Todo `sync()` — os grabs fazem um por
+   expõe a extensão xkb. No Wayland o problema não existe: o KWin manda a repetição num
+   sinal separado (`globalShortcutRepeated`), que o backend simplesmente não escuta.
+3. **(X11) `select()` sozinho perde eventos.** Todo `sync()` — os grabs fazem um por
    gravação — lê o socket inteiro atrás da resposta e leva junto os eventos que chegaram
    no meio; eles ficam na fila interna do `python-xlib`, onde o `select` não os enxerga.
    Sintoma: reapertar o atalho ~80 ms depois de soltar engolia o press até a tecla
@@ -101,9 +105,57 @@ Cada uma custou uma sessão de depuração. Não desfaça sem entender o motivo.
    que é o que permite colar na janela do usuário logo depois. A opacidade é uma
    propriedade interna (`fade`), não `windowOpacity`, para não depender do compositor.
 
+### Wayland (Plasma 6)
+
+Estas custaram uma sessão inteira. O detalhe comum às três primeiras é que **falham em
+silêncio**: nada levanta exceção, nada aparece no log do aplicativo.
+
+11. **`setShortcut` sem `SetPresent` registra o atalho e não instala o grab.** As flags
+    são `SetPresent=2 | NoAutoloading=4`; com `4` sozinho a tecla passa a constar como
+    ocupada, o arquivo do KDE ganha a linha, e o atalho nunca dispara. O teste que
+    distingue os dois casos é `isActive()` no objeto do componente.
+12. **`QDBusInterface.call()` não converte tipos; a chamada dinâmica sim.** Use
+    `iface.setShortcut(...)`, nunca `iface.call("setShortcut", ...)` — esta manda `av`/`i`
+    onde o serviço espera `ai`/`u` e a mensagem é recusada inteira.
+13. **`uint` dentro de `a{sv}` é impossível no QtDBus do PySide6.** É por isso, e só por
+    isso, que `portal.py` usa `jeepney`. Não tente "simplificar" trocando por QtDBus: o
+    portal responde `Expected type 'u' for option 'types', got 'i'`.
+14. **A interface precisa rodar sobre XWayland** (`QT_QPA_PLATFORM=xcb`, forçado no
+    `__main__.py`). No Wayland nativo a cápsula não consegue se posicionar. Atalho e
+    colagem não dependem disso.
+15. **Não há detecção de janela em foco no Wayland.** `active_window_class()` devolve `""`
+    e o modo "automático" cai no Ctrl+V. Não existe conserto barato: o KWin só expõe
+    `queryWindowInfo`, que exige o usuário clicar numa janela.
+
 ## Como testar
 
 Dirija a interface de verdade em vez de confiar na leitura do código:
+
+**No Wayland não dá para simular a tecla.** O XTEST é descartado pelo compositor (veja o
+LEARNING.md), então *alguém precisa apertar a tecla de verdade*. O que dá para verificar
+sozinho é se o registro ficou de pé — e essas três perguntas separam "registrado" de
+"funcionando":
+
+```bash
+# 1. a tecla está capturada?  False = o Sussurro pegou
+# 2. o componente está ativo? False = registrado porém decorativo (veja armadilha 11)
+.venv/bin/python -c "
+import sys
+from PySide6.QtCore import QCoreApplication
+from PySide6.QtGui import Qt
+from PySide6.QtDBus import QDBusConnection, QDBusInterface
+app = QCoreApplication(sys.argv); bus = QDBusConnection.sessionBus()
+k = QDBusInterface('org.kde.kglobalaccel', '/kglobalaccel', 'org.kde.KGlobalAccel', bus)
+print('livre :', k.isGlobalShortcutAvailable(int(Qt.Key.Key_Pause.value), 'x'))
+c = QDBusInterface('org.kde.kglobalaccel', k.getComponent('sussurro').path(),
+                   'org.kde.kglobalaccel.Component', bus)
+print('ativo :', c.isActive(), c.shortcutNames())"
+
+# 3. testemunha independente: o compositor está mesmo emitindo os sinais?
+dbus-monitor --session "type='signal',interface='org.kde.kglobalaccel.Component'"
+```
+
+No X11 a simulação continua valendo:
 
 ```bash
 # simula segurar e soltar a tecla (XTEST), como se fosse o teclado físico
