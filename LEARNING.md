@@ -127,6 +127,24 @@ ação *do mesmo componente* já segura — `setShortcut` devolve `[0]`, e limpa
 disco não adianta, porque o daemon mantém o estado em memória e reescreve o arquivo.
 Remova pelo D-Bus (`unRegister`), não pelo `kwriteconfig6`.
 
+**Por que KGlobalAccel e não o portal.** O caminho multiplataforma seria
+`org.freedesktop.portal.GlobalShortcuts`, que existe nesta máquina e declara `Activated`
+e `Deactivated` — o app do Claude usa esse portal aqui. Ele foi descartado por um motivo
+que depois deixou de valer: o `BindShortcuts` exige `a(sa{sv})`, que o QtDBus do PySide6
+não monta, e naquele momento ainda não havia `jeepney` no projeto. Com o `jeepney` já
+presente por causa da colagem, o obstáculo sumiu.
+
+Ficou como está por decisão consciente, com dois pontos a favor: o KGlobalAccel deixa o
+*app* escolher a tecla (no portal quem define o gatilho é o usuário, pela interface do
+compositor — `preferred_trigger` é só sugestão), e a interface se manteve estável do
+Plasma 5 para o 6. Os dois custos, para quem for reavaliar: é interface interna do KDE
+(o caminho público é a biblioteca C++ `KGlobalAccel`, sem contrato de estabilidade para
+quem chama o D-Bus direto), e prende o Sussurro ao Plasma — GNOME e Sway ficam de fora.
+Se um dia o atalho parar de funcionar depois de uma atualização do Plasma, é aqui que se
+começa a olhar, e o portal é o plano B pronto. Falta medir uma coisa antes de trocar: se
+o `Deactivated` do portal do KDE chega de forma confiável ao soltar a tecla — sem isso o
+"segure e fale" não funciona.
+
 **O auto-repeat deixou de ser problema.** No X11 era preciso desligar o repeat da tecla
 (veja acima) porque ele fabricava pares press/release. O KWin manda a repetição num sinal
 à parte, `globalShortcutRepeated`, que o `hotkey.py` simplesmente não escuta: `pressed` e
